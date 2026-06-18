@@ -1,0 +1,2 @@
+# BNB AI Agent SDK with the ERC-8183 server (FastAPI/Uvicorn) + IPFS storage.
+bnbagent[server,ipfs]
