@@ -30,6 +30,33 @@ import type {
   SwapResult,
 } from "./types";
 
+const num = (key: string, fallback: number): number => {
+  const v = process.env[key];
+  const n = v ? Number(v) : NaN;
+  return Number.isFinite(n) ? n : fallback;
+};
+const sleep = (ms: number): Promise<void> =>
+  new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Whether a swap error is a TRANSIENT upstream/network blip worth retrying — and NOT a
+ * real on-chain revert (tx already cost gas) or an auth/funds problem (retrying can't
+ * fix those). TWAK labels its flaky price-service hiccups "NETWORK_ERROR" / "unable to
+ * fetch price"; those happen BEFORE any tx is sent, so retrying is safe and free.
+ */
+export function isTransientSwapError(msg: string): boolean {
+  const m = msg.toLowerCase();
+  if (
+    /reverted|claim tokens|approval_sent|tx_failed|forbidden|403|api key|unauthorized|insufficient/.test(
+      m,
+    )
+  )
+    return false;
+  return /network_error|unable to fetch|could not fetch|try again|timeout|timed out|econnreset|etimedout|temporar|rate.?limit/.test(
+    m,
+  );
+}
+
 export interface TwakExecutorOptions {
   /** TWAK chain key (default 'bsc' — BNB Smart Chain). */
   chain?: string;
@@ -129,7 +156,7 @@ export class TwakExecutor implements Executor {
       req.maxSlippageBps > 0
         ? req.maxSlippageBps / 100
         : this.defaultSlippagePct;
-    const { json, raw } = await this.run([
+    const args = [
       "swap",
       req.fromSymbol,
       req.toSymbol,
@@ -140,27 +167,43 @@ export class TwakExecutor implements Executor {
       "--slippage",
       String(slippagePct),
       "--json",
-    ]);
-    const obj = asRecord(json);
-    if (obj.error || obj.errorCode) {
-      return { ok: false, error: String(obj.error ?? obj.errorCode) };
+    ];
+    // TWAK's price/quote upstream is intermittently flaky (NETWORK_ERROR / "unable to
+    // fetch price") BEFORE any tx is sent — so retry transient blips. Real reverts and
+    // auth/funds errors are NOT retried (isTransientSwapError filters them out).
+    const maxAttempts = Math.max(1, num("TWAK_SWAP_RETRIES", 10));
+    const retryDelayMs = num("TWAK_SWAP_RETRY_MS", 2000);
+    let lastErr = "swap failed";
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const { json, raw } = await this.run(args);
+      const obj = asRecord(json);
+      if (obj.error || obj.errorCode) {
+        lastErr = String(obj.error ?? obj.errorCode);
+        if (attempt < maxAttempts && isTransientSwapError(lastErr)) {
+          await sleep(retryDelayMs); // transient blip, no tx sent — try again
+          continue;
+        }
+        return { ok: false, error: lastErr };
+      }
+      const txHash = pickString(obj, [
+        "txHash",
+        "hash",
+        "transactionHash",
+        "txid",
+        "tx",
+      ]);
+      if (!txHash) {
+        // No error but no hash — ambiguous; do NOT retry (a tx may have been sent).
+        return {
+          ok: false,
+          error: `swap returned no tx hash: ${truncate(raw, 200)}`,
+        };
+      }
+      const filledUsd =
+        pickNumber(obj, ["filledUsd", "amountUsd", "usd"]) ?? req.amountUsd;
+      return { ok: true, txHash, filledUsd };
     }
-    const txHash = pickString(obj, [
-      "txHash",
-      "hash",
-      "transactionHash",
-      "txid",
-      "tx",
-    ]);
-    if (!txHash) {
-      return {
-        ok: false,
-        error: `swap returned no tx hash: ${truncate(raw, 200)}`,
-      };
-    }
-    const filledUsd =
-      pickNumber(obj, ["filledUsd", "amountUsd", "usd"]) ?? req.amountUsd;
-    return { ok: true, txHash, filledUsd };
+    return { ok: false, error: lastErr };
   }
 
   async registerForCompetition(): Promise<SwapResult> {

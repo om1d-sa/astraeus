@@ -28,16 +28,15 @@ describe('Character Configuration', () => {
     const originalAnthropicKey = process.env.ANTHROPIC_API_KEY;
 
     try {
-      // Verify if plugins array includes the core plugin
+      // Core plugins are always present.
       expect(character.plugins).toContain('@elizaos/plugin-sql');
+      expect(character.plugins).toContain('@elizaos/plugin-bootstrap');
+      // Astraeus uses OpenRouter as its model provider (LLM + embeddings).
+      expect(character.plugins).toContain('@elizaos/plugin-openrouter');
 
-      // Plugins array should have conditional plugins based on environment variables
-      if (process.env.OPENAI_API_KEY) {
-        expect(character.plugins).toContain('@elizaos/plugin-openai');
-      }
-
-      if (process.env.ANTHROPIC_API_KEY) {
-        expect(character.plugins).toContain('@elizaos/plugin-anthropic');
+      // The MCP plugin is included conditionally when CMC/TWAK creds are configured.
+      if (process.env.COINMARKETCAP_API_KEY || process.env.TWAK_ACCESS_ID) {
+        expect(character.plugins).toContain('@elizaos/plugin-mcp');
       }
     } finally {
       // Restore original env values
@@ -66,22 +65,19 @@ describe('Character Configuration', () => {
     }
   });
 
-  it('should have message examples for training', () => {
+  it('should expose messageExamples as an array', () => {
+    // Astraeus routes behavior through the system prompt + action examples rather
+    // than character-level messageExamples, so this array is intentionally empty.
     expect(Array.isArray(character.messageExamples)).toBe(true);
-    if (character.messageExamples && Array.isArray(character.messageExamples)) {
-      expect(character.messageExamples.length).toBeGreaterThan(0);
 
-      // Check structure of first example
-      const firstExample = character.messageExamples[0];
-      expect(Array.isArray(firstExample)).toBe(true);
-      expect(firstExample.length).toBeGreaterThan(1); // At least a user message and a response
-
-      // Check that messages have name and content
-      firstExample.forEach((message) => {
+    // If examples are present, each turn must have a name and content.text.
+    for (const example of character.messageExamples ?? []) {
+      expect(Array.isArray(example)).toBe(true);
+      for (const message of example) {
         expect(message).toHaveProperty('name');
         expect(message).toHaveProperty('content');
         expect(message.content).toHaveProperty('text');
-      });
+      }
     }
   });
 });

@@ -149,6 +149,7 @@ secrets.json
 
 # ----- ElizaOS runtime data (local DB, agent state, chat history) -----
 .eliza/
+.elizadb-test/
 data/
 *.sqlite
 *.sqlite-journal

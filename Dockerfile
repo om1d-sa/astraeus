@@ -16,8 +16,10 @@ RUN apt-get update && \
 
 
 
-# Install bun globally with npm
-RUN npm install -g bun
+# Install bun + the Trust Wallet Agent Kit CLI (twak) globally.
+# The agent shells out to `twak` for swaps/balance/identity/x402 — without it,
+# every on-chain action fails with "twak: command not found" inside the container.
+RUN npm install -g bun @trustwallet/cli@0.19.1
 
 # Add bun global bin to PATH for root and node users
 ENV PATH="/root/.bun/bin:/home/node/.bun/bin:$PATH"

@@ -10,10 +10,10 @@ import {
   type ForecastTimeframe,
   type PriceForecast,
 } from "../skills/options-forecast";
-import { fetchCmcOptionsContext } from "../skills/options-forecast/cmc-context";
+import { gatherForecastEnrichment } from "../skills/options-forecast/enrich";
 import { parseTimeframe } from "../actions/forecast";
-import { quoteX402, requestX402 } from "../exec/x402";
-import { truncate } from "../exec/twakCli";
+import { quoteX402 } from "../exec/x402";
+import { checkGuardrails } from "../config/risk";
 
 const num = (key: string, fallback: number): number => {
   const v = process.env[key];
@@ -100,6 +100,17 @@ export class TradingService extends Service {
   private executor: LoopExecutor | null = null;
   /** Self-rescheduling autonomous loop (replaces a fixed setInterval). */
   private loopTimer?: ReturnType<typeof setTimeout>;
+  /** Standalone Track-1 qualifying-trade heartbeat (12h cadence, INDEPENDENT of the loop). */
+  private qualifyTimer?: ReturnType<typeof setTimeout>;
+  /** True while a qualifying round-trip is executing — prevents concurrent/double trades. */
+  private qualifyInFlight = false;
+  /** True while a trading-loop cycle (forecast+trade) runs — the qualifier waits for it. */
+  private cycleInFlight = false;
+  // --- Live risk-guardrail state (drawdown halt + per-UTC-day trade/volume caps) ---
+  private peakEquityUsd = 0;
+  private tradesToday = 0;
+  private volumeTodayUsd = 0;
+  private tradeDayKey = "";
   private loopActive = false;
   /** Escalation depth: 0 = base timeframe; ≥1 = on the retry ladder (4h, then 1h…). */
   private retryStep = 0;
@@ -138,7 +149,9 @@ export class TradingService extends Service {
         : "paper";
     const stateDir =
       process.env.ASTRAEUS_STATE_DIR?.trim() || join(process.cwd(), "data");
-    this.statePath = join(stateDir, "open-trades.json");
+    // Scope the open-position ledger by mode so paper positions can NEVER be
+    // reconciled (and sold for real) after switching ENABLE_LIVE_TRADING on.
+    this.statePath = join(stateDir, `open-trades-${this.mode}.json`);
     try {
       this.provider = new CmcDataProvider();
       this.executor =
@@ -205,63 +218,6 @@ export class TradingService extends Service {
   }
 
   /**
-   * Best-effort x402-paid premium signal(s) for the trade loop.
-   *
-   * OFF unless X402_ENRICH=true and X402_DATA_URL is set. X402_DATA_URL may be a
-   * COMMA-SEPARATED list of x402-gated endpoints (e.g. CMC quotes + listings); each
-   * is paid via TWAK and its body merged into the forecast context. Hardened so it
-   * can NEVER disrupt the loop: all calls run in parallel, each bounded by a hard
-   * timeout, and any failure is skipped → on total failure the forecast falls back
-   * to the free data path. Worst-case added latency ≈ one timeout, not the sum.
-   */
-  private async fetchX402Enrichment(): Promise<string | undefined> {
-    if ((process.env.X402_ENRICH ?? "").toLowerCase() !== "true")
-      return undefined;
-    const urls = (process.env.X402_DATA_URL ?? "")
-      .split(",")
-      .map((u) => u.trim())
-      .filter(Boolean);
-    if (urls.length === 0) return undefined;
-    const timeoutMs = num("X402_ENRICH_TIMEOUT_MS", 15_000);
-
-    // Pay one endpoint, hard-bounded so a hung subprocess can't stall the loop.
-    const fetchOne = async (url: string): Promise<string | undefined> => {
-      try {
-        const TIMEOUT = "__x402_hard_timeout__" as const;
-        const guard = new Promise<typeof TIMEOUT>((resolve) => {
-          const t = setTimeout(() => resolve(TIMEOUT), timeoutMs + 1_000);
-          t.unref?.(); // never hold the event loop open
-        });
-        const result = await Promise.race([
-          requestX402(url, { timeoutMs }),
-          guard,
-        ]);
-        if (result === TIMEOUT || !result.ok || !(result.body ?? result.raw)) {
-          logger.warn(
-            { url, err: result === TIMEOUT ? "hard-timeout" : result.error },
-            "x402 endpoint skipped — using free data for it",
-          );
-          return undefined;
-        }
-        logger.info(
-          { url, paid: result.paid, txHash: result.txHash },
-          "x402 enrichment fetched",
-        );
-        return `[${url}]\n${truncate(result.body ?? result.raw, 1500)}`;
-      } catch (e) {
-        logger.warn({ url, err: String(e) }, "x402 endpoint errored — skipped");
-        return undefined;
-      }
-    };
-
-    const parts = (await Promise.all(urls.map(fetchOne))).filter(
-      (p): p is string => Boolean(p),
-    );
-    if (parts.length === 0) return undefined;
-    return `X402-PAID PREMIUM SIGNALS (via TWAK):\n${parts.join("\n---\n")}`;
-  }
-
-  /**
    * Forecast ETH for a timeframe and, ONLY if the forecast is UP, open a fixed-size
    * ETH/USDT spot buy that auto-closes after the timeframe.
    */
@@ -280,14 +236,14 @@ export class TradingService extends Service {
       return r;
     }
     const asset = "ETH";
-    let extraContext = useCmc
-      ? await fetchCmcOptionsContext(this.rt, asset)
-      : undefined;
-    // Best-effort x402-paid premium signal (off unless X402_ENRICH=true). Never
-    // blocks the trade: bounded timeout + falls back to the free data path.
-    const x402ctx = await this.fetchX402Enrichment();
-    if (x402ctx)
-      extraContext = [extraContext, x402ctx].filter(Boolean).join("\n\n");
+    // Supplementary context (CMC options-positioning + technicals/regime + x402), all
+    // bounded/best-effort/parallel; options/derivatives data stays the PRIMARY ~60% basis.
+    const extraContext = await gatherForecastEnrichment(
+      this.rt,
+      this.provider,
+      asset,
+      useCmc,
+    );
     const f = await generateForecast(asset, timeframe, extraContext);
     // Publish the latest forecast for the (optional, decoupled) ERC-8183 sidecar.
     this.persistLatestForecast(f);
@@ -324,6 +280,31 @@ export class TradingService extends Service {
         ...base,
         reason: `insufficient cash ($${pf.cashUsd.toFixed(2)} < $${sizeUsd})`,
       };
+      this.lastResult = r;
+      return r;
+    }
+
+    // Hard pre-trade guardrails (drawdown halt + daily trade/volume caps). The
+    // competition DQs past ~30% drawdown, so we stop opening positions well before
+    // that. Spot-only + $5 size already cap downside; this is the second line.
+    this.rolloverDay();
+    this.peakEquityUsd = Math.max(this.peakEquityUsd, pf.totalValueUsd);
+    const drawdownPct =
+      this.peakEquityUsd > 0
+        ? ((this.peakEquityUsd - pf.totalValueUsd) / this.peakEquityUsd) * 100
+        : 0;
+    const guard = checkGuardrails({
+      conviction: convictionPct,
+      tradeUsd: sizeUsd,
+      currentDrawdownPct: drawdownPct,
+      tradesToday: this.tradesToday,
+      volumeTodayUsd: this.volumeTodayUsd,
+      tokenSymbol: "ETH",
+      isTokenEligible: true,
+    });
+    if (!guard.allowed) {
+      logger.warn({ reason: guard.reason }, "trade blocked by risk guardrail");
+      const r = { ...base, reason: `guardrail: ${guard.reason}` };
       this.lastResult = r;
       return r;
     }
@@ -371,6 +352,8 @@ export class TradingService extends Service {
       txHash: swap.txHash,
     };
     this.lastResult = r;
+    this.tradesToday += 1; // count toward the daily guardrail caps
+    this.volumeTodayUsd += sizeUsd;
     logger.info(
       {
         id,
@@ -563,6 +546,8 @@ export class TradingService extends Service {
     this.loopActive = true;
     this.retryStep = 0;
     void this.runCycle(this.autoTimeframe);
+    // Start the standalone Track-1 qualifying heartbeat; first one is one interval out.
+    this.scheduleQualifyCycle(num("TRACK1_QUALIFY_INTERVAL_MS", 43_200_000));
     return { ok: true };
   }
 
@@ -573,6 +558,7 @@ export class TradingService extends Service {
       clearTimeout(this.loopTimer);
       this.loopTimer = undefined;
     }
+    this.clearQualifyTimer();
     this.nextRunAt = undefined;
     this.nextTimeframe = undefined;
     return true;
@@ -585,12 +571,15 @@ export class TradingService extends Service {
     this.nextTimeframe = undefined;
 
     let success = false;
+    this.cycleInFlight = true; // the qualifying heartbeat defers while this runs
     try {
       const r = await this.forecastAndTrade(timeframe, this.autoCmc);
       success = r.traded === true;
     } catch (e) {
       logger.error({ err: String(e) }, "autonomous forecast-trade failed");
       success = false; // treat an error as unsuccessful → retry on the ladder
+    } finally {
+      this.cycleInFlight = false;
     }
     if (!this.loopActive) return;
 
@@ -624,10 +613,144 @@ export class TradingService extends Service {
     );
   }
 
+  /** Schedule the next standalone qualifying-trade cycle (12h on success, 5min on retry). */
+  private scheduleQualifyCycle(delayMs: number): void {
+    if (!this.loopActive) return;
+    this.clearQualifyTimer();
+    this.qualifyTimer = setTimeout(() => void this.runQualifyCycle(), delayMs);
+  }
+
+  private clearQualifyTimer(): void {
+    if (this.qualifyTimer) {
+      clearTimeout(this.qualifyTimer);
+      this.qualifyTimer = undefined;
+    }
+  }
+
+  /**
+   * Standalone Track-1 qualifying heartbeat — runs INDEPENDENTLY of the trading loop.
+   * Every TRACK1_QUALIFY_INTERVAL_MS (12h) it does a guaranteed buy+sell round-trip so
+   * the agent always logs a competition trade. On success it reschedules 12h out; on
+   * failure it retries every TRACK1_QUALIFY_RETRY_MS (5min) until it lands. It never
+   * collides with a trading-loop cycle: if one is running, it waits and re-checks.
+   */
+  private async runQualifyCycle(): Promise<void> {
+    if (!this.loopActive) return;
+    const intervalMs = num("TRACK1_QUALIFY_INTERVAL_MS", 43_200_000); // 12h
+    const retryMs = num("TRACK1_QUALIFY_RETRY_MS", 300_000); // 5min
+    if (
+      (process.env.TRACK1_QUALIFY_ENABLED ?? "false").toLowerCase() !== "true"
+    ) {
+      this.scheduleQualifyCycle(intervalMs); // disabled now — re-check next interval
+      return;
+    }
+    // Let the trading loop go first: if a cycle is mid-flight, wait and re-check.
+    if (this.cycleInFlight || this.qualifyInFlight) {
+      this.scheduleQualifyCycle(15_000);
+      return;
+    }
+    const landed = await this.doQualifyingTrade();
+    this.scheduleQualifyCycle(landed ? intervalMs : retryMs);
+  }
+
+  /** Reset the per-UTC-day trade/volume counters when the calendar day changes. */
+  private rolloverDay(): void {
+    const key = new Date().toISOString().slice(0, 10); // UTC YYYY-MM-DD
+    if (key !== this.tradeDayKey) {
+      this.tradeDayKey = key;
+      this.tradesToday = 0;
+      this.volumeTodayUsd = 0;
+    }
+  }
+
+  /**
+   * Buy the standard RISK_MAX_TRADE_USD size of ETH ($5 by default) and immediately
+   * sell it back to USDT — a guaranteed round-trip that registers a competition trade
+   * with ~zero market exposure (cost = fees + slippage). Returns whether it landed;
+   * the caller ({@link runQualifyCycle}) reschedules (12h on success, 5min on failure).
+   */
+  private async doQualifyingTrade(): Promise<boolean> {
+    if (!this.executor || !this.provider) return false;
+    if (this.qualifyInFlight) return false; // never run two round-trips at once
+    this.qualifyInFlight = true;
+    const sizeUsd = this.tradeSizeUsd;
+    const slippage = num("RISK_MAX_SLIPPAGE_BPS", 100);
+    try {
+      let price = 0;
+      try {
+        const sig = await this.provider.getTokenSignals(["ETH"]);
+        price = sig[0]?.priceUsd ?? 0;
+      } catch {
+        /* fall through — handled below */
+      }
+      if (price <= 0) {
+        logger.warn("Track 1 qualifying trade — no ETH price; will retry");
+        return false;
+      }
+      this.executor.mark?.({ ETH: price });
+      const pf = await this.executor.getPortfolio();
+      if (pf.cashUsd < sizeUsd) {
+        logger.warn(
+          { cashUsd: pf.cashUsd, sizeUsd },
+          "Track 1 qualifying trade — insufficient cash; will retry",
+        );
+        return false;
+      }
+      const buy = await this.executor.swap({
+        fromSymbol: "USDT",
+        toSymbol: "ETH",
+        amountUsd: sizeUsd,
+        maxSlippageBps: slippage,
+      });
+      if (!buy.ok) {
+        logger.warn(
+          { err: buy.error },
+          "Track 1 qualifying buy failed; will retry",
+        );
+        return false;
+      }
+      // Immediately sell the freshly bought ETH back to USDT (minimize exposure).
+      const sell = await this.executor.swap({
+        fromSymbol: "ETH",
+        toSymbol: "USDT",
+        amountUsd: sizeUsd,
+        maxSlippageBps: slippage,
+      });
+      this.lastResult = {
+        ok: true,
+        traded: true,
+        timeframe: "hourly",
+        direction: "sideways",
+        sizeUsd,
+        reason: "Track 1 qualifying round-trip (guaranteed daily trade)",
+        txHash: buy.txHash,
+      };
+      logger.info(
+        { sizeUsd, buyTx: buy.txHash, sellTx: sell.txHash, sellOk: sell.ok },
+        "Track 1 qualifying round-trip executed (competition daily-trade safety)",
+      );
+      return true;
+    } catch (e) {
+      logger.error(
+        { err: String(e) },
+        "Track 1 qualifying trade errored; will retry",
+      );
+      return false;
+    } finally {
+      this.qualifyInFlight = false;
+    }
+  }
+
   async getStatus(): Promise<TradingStatus> {
-    const portfolio = this.executor
-      ? await this.executor.getPortfolio()
-      : undefined;
+    let portfolio: Portfolio | undefined;
+    try {
+      portfolio = this.executor
+        ? await this.executor.getPortfolio()
+        : undefined;
+    } catch (e) {
+      // In live mode a TWAK balance error must not break the whole status report.
+      logger.warn({ err: String(e) }, "getStatus: portfolio fetch failed");
+    }
     return {
       running: this.running,
       symbols: this.symbols,

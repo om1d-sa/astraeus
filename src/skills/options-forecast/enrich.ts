@@ -1,0 +1,154 @@
+/**
+ * Shared forecast enrichment — the SAME bounded, toggle-managed, best-effort CMC
+ * context used by both the autonomous loop AND the manual OPTIONS_FORECAST action.
+ *
+ * Sources (all parallel, each bounded by its own timeout, all skip-on-failure):
+ *   - CMC options-positioning (Skill Hub MCP) — "source 7"   [CMC_OPTIONS_ENRICH]
+ *   - CMC technicals / regime / price / Fear & Greed (REST)  [CMC_ENRICH]
+ *   - x402-paid premium signal(s)                            [X402_ENRICH]
+ *
+ * The options/derivatives data inside generateForecast stays the PRIMARY ~60% basis;
+ * this is the supplementary ~40%. None of this can throw or stall the forecast.
+ */
+import { type IAgentRuntime, logger } from "@elizaos/core";
+import type { CmcDataProvider } from "../../data/cmc";
+import { fetchCmcOptionsContext } from "./cmc-context";
+import { fetchCmcForecastContext } from "./cmc-enrich";
+import { runSkillBundle, skillList, DEFAULT_ETF_SKILLS } from "./skill-bundle";
+import { requestX402 } from "../../exec/x402";
+import { truncate } from "../../exec/twakCli";
+
+const num = (key: string, fallback: number): number => {
+  const v = process.env[key];
+  const n = v ? Number(v) : NaN;
+  return Number.isFinite(n) ? n : fallback;
+};
+
+/** Race a promise against a hard, unref'd timeout; resolves undefined on timeout. */
+function raceTimeout<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
+  const TIMEOUT = "__enrich_timeout__" as const;
+  const guard = new Promise<typeof TIMEOUT>((resolve) => {
+    const t = setTimeout(() => resolve(TIMEOUT), ms);
+    (t as { unref?: () => void }).unref?.();
+  });
+  return Promise.race([p, guard]).then((r) =>
+    r === TIMEOUT ? undefined : (r as T),
+  );
+}
+
+/** CMC options-positioning ("source 7"). Forced by manual "cmc", else CMC_OPTIONS_ENRICH≠false. */
+export async function fetchCmcOptionsEnrichment(
+  rt: IAgentRuntime,
+  asset: string,
+  force: boolean,
+): Promise<string | undefined> {
+  const on =
+    force ||
+    (process.env.CMC_OPTIONS_ENRICH ?? "true").toLowerCase() !== "false";
+  if (!on) return undefined;
+  try {
+    const result = await raceTimeout(
+      fetchCmcOptionsContext(rt, asset),
+      num("CMC_OPTIONS_TIMEOUT_MS", 30_000),
+    );
+    return result || undefined;
+  } catch (e) {
+    logger.warn(
+      { err: String(e) },
+      "CMC options-positioning skipped — using base data",
+    );
+    return undefined;
+  }
+}
+
+/** CMC technicals / regime / price / Fear & Greed (REST). On by default (CMC_ENRICH≠false). */
+export async function fetchCmcRestEnrichment(
+  provider: CmcDataProvider | null | undefined,
+  asset: string,
+): Promise<string | undefined> {
+  if ((process.env.CMC_ENRICH ?? "true").toLowerCase() === "false")
+    return undefined;
+  if (!provider) return undefined;
+  try {
+    const result = await raceTimeout(
+      fetchCmcForecastContext(provider, asset),
+      num("CMC_ENRICH_TIMEOUT_MS", 12_000),
+    );
+    return result?.context;
+  } catch (e) {
+    logger.warn({ err: String(e) }, "CMC enrichment skipped — using base data");
+    return undefined;
+  }
+}
+
+/** x402-paid premium signal(s). OFF unless X402_ENRICH=true. Parallel + bounded per endpoint. */
+export async function fetchX402Enrichment(): Promise<string | undefined> {
+  if ((process.env.X402_ENRICH ?? "").toLowerCase() !== "true")
+    return undefined;
+  const urls = (process.env.X402_DATA_URL ?? "")
+    .split(",")
+    .map((u) => u.trim())
+    .filter(Boolean);
+  if (urls.length === 0) return undefined;
+  const timeoutMs = num("X402_ENRICH_TIMEOUT_MS", 15_000);
+
+  const fetchOne = async (url: string): Promise<string | undefined> => {
+    try {
+      const r = await raceTimeout(
+        requestX402(url, { timeoutMs }),
+        timeoutMs + 1_000,
+      );
+      if (!r || !r.ok || !(r.body ?? r.raw)) {
+        logger.warn(
+          { url, err: r?.error ?? "timeout" },
+          "x402 endpoint skipped",
+        );
+        return undefined;
+      }
+      logger.info(
+        { url, paid: r.paid, txHash: r.txHash },
+        "x402 enrichment fetched",
+      );
+      return `[${url}]\n${truncate(r.body ?? r.raw, 1500)}`;
+    } catch (e) {
+      logger.warn({ url, err: String(e) }, "x402 endpoint errored — skipped");
+      return undefined;
+    }
+  };
+
+  const parts = (await Promise.all(urls.map(fetchOne))).filter(
+    (p): p is string => Boolean(p),
+  );
+  if (parts.length === 0) return undefined;
+  return `X402-PAID PREMIUM SIGNALS (via TWAK):\n${parts.join("\n---\n")}`;
+}
+
+/**
+ * Gather all supplementary forecast context in PARALLEL (total latency ≈ the slowest,
+ * not the sum). Never throws, never stalls the forecast.
+ */
+export async function gatherForecastEnrichment(
+  rt: IAgentRuntime,
+  provider: CmcDataProvider | null | undefined,
+  asset: string,
+  forceCmcOptions = false,
+): Promise<string | undefined> {
+  // ETF-flow skills only apply to BTC/ETH (no spot ETF for BNB). Gated by the
+  // CMC_SKILLS_ENABLED master toggle (slow), so off by default.
+  const wantEtf = asset === "BTC" || asset === "ETH";
+  const [opt, cmc, x402, etf] = await Promise.all([
+    fetchCmcOptionsEnrichment(rt, asset, forceCmcOptions),
+    fetchCmcRestEnrichment(provider, asset),
+    fetchX402Enrichment(),
+    wantEtf
+      ? runSkillBundle(
+          rt,
+          skillList("FORECAST_ETF_SKILLS", DEFAULT_ETF_SKILLS),
+          {
+            symbol: asset,
+          },
+        )
+      : Promise.resolve(undefined),
+  ]);
+  return [opt, cmc, x402, etf].filter(Boolean).join("\n\n") || undefined;
+}

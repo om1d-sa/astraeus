@@ -8,7 +8,12 @@ import { closeAllAction } from "./actions/closeAll";
 import { diagnosticsAction } from "./actions/diagnostics";
 import { agentIdentityAction } from "./actions/agentIdentity";
 import { x402PayAction } from "./actions/x402Pay";
+import { trendingAction } from "./actions/trending";
+import { researchAction } from "./actions/research";
+import { portfolioAction } from "./actions/portfolio";
+import { liquidationAction } from "./actions/liquidation";
 import { TradingService } from "./agent/service";
+import { AstraeusE2ETestSuite } from "./__tests__/e2e/astraeus.e2e";
 
 /**
  * Astraeus trading plugin.
@@ -37,10 +42,16 @@ export const tradingPlugin: Plugin = {
     diagnosticsAction,
     agentIdentityAction,
     x402PayAction,
+    trendingAction,
+    researchAction,
+    portfolioAction,
+    liquidationAction,
   ],
   providers: [],
   services: [TradingService],
   evaluators: [],
+  // E2E suite run by `elizaos test e2e` against a live runtime.
+  tests: [AstraeusE2ETestSuite],
 };
 
 export default tradingPlugin;

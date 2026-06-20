@@ -181,3 +181,31 @@ nixpacks.toml
 sample-env
 .env.example
 .env.sample
+
+# ============================================================================
+# Astraeus-specific — kept ALIGNED with .gitignore (never bake these into the image)
+# ============================================================================
+
+# ----- Secrets (NEVER copy into an image layer) -----
+.env.*
+*.pem
+*.key
+secrets.json
+
+# ----- ElizaOS runtime data (local DB, agent state, open trades, paper portfolio) -----
+.eliza/
+.elizadb-test/
+data/
+*.sqlite
+*.sqlite-journal
+*.db
+pglite/
+
+# ----- Python sidecar (ERC-8183) — NOT part of the Node agent image; exclude ENTIRELY -----
+sidecar/
+**/__pycache__/
+*.pyc
+
+# ----- Local project guide & stray nested repo -----
+CLAUDE.md
+/Astraeus/

@@ -14,6 +14,13 @@ import {
   type PriceForecast,
 } from "../skills/options-forecast";
 import { parseTimeframe } from "./forecast";
+import { CmcDataProvider } from "../data/cmc";
+import { fetchCmcOptionsEnrichment } from "../skills/options-forecast/enrich";
+import {
+  runSkillBundle,
+  skillList,
+  DEFAULT_MARKET_SKILLS,
+} from "../skills/options-forecast/skill-bundle";
 
 const TF_LABEL: Record<ForecastTimeframe, string> = {
   hourly: "1H",
@@ -72,7 +79,7 @@ export const marketForecastAction: Action = {
   },
 
   handler: async (
-    _runtime: IAgentRuntime,
+    runtime: IAgentRuntime,
     message: Memory,
     _state: State | undefined,
     _options: unknown,
@@ -87,8 +94,41 @@ export const marketForecastAction: Action = {
         "MARKET_FORECAST: generating overall market forecast",
       );
 
+      // Per-asset options forecasts (fast 6 sources, no slow options-positioning) +
+      // CMC market data, all in parallel.
+      const cmc = (() => {
+        try {
+          return new CmcDataProvider();
+        } catch {
+          return null;
+        }
+      })();
+      // Source 7 (CMC options-positioning) feeds the 30% options leg — slow (MCP),
+      // so OFF by default; flip MARKET_OPTIONS_ENRICH=true to include it.
+      const useSource7 =
+        (process.env.MARKET_OPTIONS_ENRICH ?? "false").toLowerCase() === "true";
+      const optCtxP: Promise<(string | undefined)[]> = useSource7
+        ? Promise.all(
+            ASSETS.map((a) => fetchCmcOptionsEnrichment(runtime, a, true)),
+          )
+        : Promise.resolve(ASSETS.map(() => undefined));
+      const [optCtx, g, mc, news, btcTech] = await Promise.all([
+        optCtxP,
+        cmc
+          ? cmc.getGlobalMetrics().catch(() => undefined)
+          : Promise.resolve(undefined),
+        cmc
+          ? cmc.getMarketContext().catch(() => ({}) as { fearGreed?: number })
+          : Promise.resolve({} as { fearGreed?: number }),
+        cmc
+          ? cmc.getLatestNews("BTC", 3).catch(() => [])
+          : Promise.resolve([] as { title: string }[]),
+        cmc
+          ? cmc.getTechnicals("BTC").catch(() => undefined)
+          : Promise.resolve(undefined),
+      ]);
       const forecasts = await Promise.all(
-        ASSETS.map((a) => generateForecast(a, timeframe)),
+        ASSETS.map((a, i) => generateForecast(a, timeframe, optCtx[i])),
       );
       const byAsset: Record<Asset, PriceForecast> = {
         BTC: forecasts[0],
@@ -96,29 +136,101 @@ export const marketForecastAction: Action = {
         BNB: forecasts[2],
       };
 
-      // Weighted aggregate: score in -1..1 (weights sum to 1), confidence 0..1.
-      let score = 0;
+      // Options leg (30%): weighted BTC/ETH/BNB directional score in -1..1.
+      let optScore = 0;
       let confidence = 0;
       for (const f of forecasts) {
-        score +=
+        optScore +=
           dirVal(f.prediction.direction) *
           f.prediction.confidence *
           WEIGHTS[f.asset];
         confidence += f.prediction.confidence * WEIGHTS[f.asset];
       }
+
+      // CMC market-sentiment leg (70%): Fear & Greed + total-cap 24h change → -1..1.
+      const clamp = (x: number) => Math.max(-1, Math.min(1, x));
+      const fgScore =
+        mc.fearGreed !== undefined
+          ? clamp((mc.fearGreed - 50) / 50)
+          : undefined;
+      const mcapScore =
+        g?.marketCapChange24hPct !== undefined
+          ? clamp(g.marketCapChange24hPct / 5)
+          : undefined;
+      // BTC technicals as the market-wide momentum proxy (RSI + MACD).
+      const btcRsiScore =
+        btcTech?.rsi14 !== undefined
+          ? clamp((btcTech.rsi14 - 50) / 50)
+          : undefined;
+      const btcMacdScore =
+        btcTech?.macd !== undefined
+          ? btcTech.macd > 0
+            ? 0.5
+            : btcTech.macd < 0
+              ? -0.5
+              : 0
+          : undefined;
+      const cmcSignals = [fgScore, mcapScore, btcRsiScore, btcMacdScore].filter(
+        (x): x is number => x !== undefined,
+      );
+      const cmcScore = cmcSignals.length
+        ? cmcSignals.reduce((a, b) => a + b, 0) / cmcSignals.length
+        : undefined;
+
+      // Blend: CMC market 70% + options 30% (fall back to options-only if CMC is down).
+      const blended =
+        cmcScore !== undefined ? 0.7 * cmcScore + 0.3 * optScore : optScore;
       const overall =
-        score > 0.12 ? "BULLISH" : score < -0.12 ? "BEARISH" : "NEUTRAL";
+        blended > 0.12 ? "BULLISH" : blended < -0.12 ? "BEARISH" : "NEUTRAL";
       const overallArrow =
         overall === "BULLISH" ? "▲" : overall === "BEARISH" ? "▼" : "—";
-      const scoreOut = Math.round(score * 100);
+      const scoreOut = Math.round(blended * 100);
+      const weightNote =
+        cmcScore !== undefined
+          ? "CMC market 70% + options 30%"
+          : "options 100% (CMC unavailable)";
 
-      const responseText =
-        `Overall crypto market — ${TF_LABEL[timeframe]} — ${overallArrow} ${overall} (score ${scoreOut >= 0 ? "+" : ""}${scoreOut})\n` +
+      let responseText =
+        `Overall crypto market — ${TF_LABEL[timeframe]} — ${overallArrow} ${overall} (score ${scoreOut >= 0 ? "+" : ""}${scoreOut} · ${weightNote})\n` +
         `• Conviction: ${(confidence * 100).toFixed(0)}%\n` +
-        `• Breakdown (weighted BTC 50% / ETH 30% / BNB 20%):\n` +
-        `${ASSETS.map((a) => assetLine(byAsset[a])).join("\n")}\n` +
-        `• Read: ${overall === "NEUTRAL" ? "majors are mixed/range-bound" : `majors lean ${overall.toLowerCase()}`} on the ${TF_LABEL[timeframe]} horizon` +
-        ` (BTC ${byAsset.BTC.prediction.direction}, ETH ${byAsset.ETH.prediction.direction}, BNB ${byAsset.BNB.prediction.direction}).`;
+        `• Options leg (30%, weighted BTC 50% / ETH 30% / BNB 20%):\n` +
+        `${ASSETS.map((a) => assetLine(byAsset[a])).join("\n")}`;
+
+      const status: string[] = [];
+      if (g) {
+        const chg =
+          g.marketCapChange24hPct !== undefined
+            ? ` (${g.marketCapChange24hPct >= 0 ? "+" : ""}${g.marketCapChange24hPct.toFixed(1)}% 24h)`
+            : "";
+        status.push(
+          `  • Total cap $${(g.totalMarketCapUsd / 1e9).toFixed(0)}B${chg} · BTC dominance ${g.btcDominance.toFixed(1)}%`,
+        );
+      }
+      if (mc.fearGreed !== undefined)
+        status.push(`  • Fear & Greed: ${mc.fearGreed}/100`);
+      if (btcTech && btcTech.points >= 14) {
+        const macd =
+          btcTech.macd === undefined
+            ? "n/a"
+            : btcTech.macd > 0
+              ? `bullish (+${btcTech.macd.toFixed(1)})`
+              : `bearish (${btcTech.macd.toFixed(1)})`;
+        status.push(
+          `  • BTC technicals (CMC daily): RSI14 ${btcTech.rsi14?.toFixed(0) ?? "n/a"}, MACD ${macd}, EMA12 ${btcTech.ema12?.toFixed(0) ?? "n/a"} vs EMA26 ${btcTech.ema26?.toFixed(0) ?? "n/a"}`,
+        );
+      }
+      if (status.length)
+        responseText += `\n• CMC market leg (70%):\n${status.join("\n")}`;
+      if (news.length)
+        responseText += `\n• Latest news (CMC):\n${news.map((n) => `  • ${n.title}`).join("\n")}`;
+
+      // Optional CMC skill bundle (qualitative analyses) — off unless CMC_SKILLS_ENABLED=true.
+      const skillCtx = await runSkillBundle(
+        runtime,
+        skillList("MARKET_SKILLS", DEFAULT_MARKET_SKILLS),
+        {},
+      );
+      if (skillCtx) responseText += `\n\n${skillCtx}`;
 
       await callback?.({ text: responseText, actions: ["MARKET_FORECAST"] });
       return {
