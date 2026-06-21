@@ -28,6 +28,7 @@ const EXPECTED_ACTIONS = [
   "AUTONOMOUS_MODE",
   "CLOSE_ALL_POSITIONS",
   "TRADE_DIAGNOSTICS",
+  "AGENT_DEBUG",
   "AGENT_IDENTITY",
   "X402_PAY",
   "TRENDING",
@@ -106,6 +107,7 @@ export const AstraeusE2ETestSuite: TestSuite = {
           ["CMC_SKILL", "run the daily_market_overview skill"],
           ["CLOSE_ALL_POSITIONS", "close all positions"],
           ["TRADE_DIAGNOSTICS", "run diagnostics"],
+          ["AGENT_DEBUG", "debug skill bundles"],
           ["TRENDING", "what's trending in crypto"],
           ["RESEARCH", "research BTC fundamentals"],
           ["PORTFOLIO_ANALYSIS", "portfolio analysis: 40% BTC, 60% ETH"],
@@ -139,6 +141,102 @@ export const AstraeusE2ETestSuite: TestSuite = {
           return;
         }
         logger.info("✓ astraeus-trading service is available");
+      },
+    },
+
+    {
+      name: "take_profit_config_is_exposed",
+      fn: async (runtime: IAgentRuntime) => {
+        const service = runtime.getService("astraeus-trading") as unknown as {
+          takeProfitPct?: number;
+          takeProfitEnabled?: boolean;
+        } | null;
+        if (!service) {
+          logger.info(
+            "⚠ service not registered (missing COINMARKETCAP_API_KEY?) — skipping take-profit check",
+          );
+          return;
+        }
+        if (typeof service.takeProfitPct !== "number") {
+          throw new Error(
+            "take-profit config (takeProfitPct) not exposed on the service",
+          );
+        }
+        if (typeof service.takeProfitEnabled !== "boolean") {
+          throw new Error(
+            "take-profit toggle (takeProfitEnabled) not exposed on the service",
+          );
+        }
+        logger.info(
+          `✓ take-profit config exposed: ${service.takeProfitEnabled ? `+${service.takeProfitPct}%` : "off"}`,
+        );
+      },
+    },
+
+    {
+      name: "positions_report_is_well_formed",
+      fn: async (runtime: IAgentRuntime) => {
+        const service = runtime.getService("astraeus-trading") as unknown as {
+          getPositions?: () => Promise<{
+            positions: unknown[];
+            totalPnlUsd: number;
+            totalValueUsd: number;
+            anyPriced: boolean;
+          }>;
+        } | null;
+        if (!service?.getPositions) {
+          logger.info(
+            "⚠ service/getPositions not available (missing COINMARKETCAP_API_KEY?) — skipping positions check",
+          );
+          return;
+        }
+        // With no open positions this does no network call and must be deterministic.
+        const rep = await service.getPositions();
+        if (!Array.isArray(rep.positions)) {
+          throw new Error("getPositions() did not return a positions array");
+        }
+        if (
+          typeof rep.totalPnlUsd !== "number" ||
+          typeof rep.totalValueUsd !== "number" ||
+          typeof rep.anyPriced !== "boolean"
+        ) {
+          throw new Error("getPositions() report is missing aggregate PnL fields");
+        }
+        logger.info(
+          `✓ positions report well-formed (${rep.positions.length} open, PnL $${rep.totalPnlUsd.toFixed(2)})`,
+        );
+      },
+    },
+
+    {
+      name: "agent_status_routing_and_render",
+      fn: async (runtime: IAgentRuntime) => {
+        const action = (runtime.actions ?? []).find(
+          (a: Action) => a.name === "AUTONOMOUS_MODE",
+        );
+        if (!action) throw new Error("AUTONOMOUS_MODE action not found");
+        const mkMsg = (text: string) =>
+          ({ content: { text, source: "test" } }) as never;
+        const state = { values: {}, data: {}, text: "" } as never;
+        // "agent status" and "show pnl" both belong to AUTONOMOUS_MODE…
+        for (const text of ["agent status", "show pnl", "what am I holding"]) {
+          if ((await action.validate(runtime, mkMsg(text), state)) !== true) {
+            throw new Error(`AUTONOMOUS_MODE.validate rejected "${text}"`);
+          }
+        }
+        // …but "close all positions" must defer to CLOSE_ALL_POSITIONS.
+        if (
+          (await action.validate(
+            runtime,
+            mkMsg("close all positions"),
+            state,
+          )) !== false
+        ) {
+          throw new Error(
+            'AUTONOMOUS_MODE.validate should defer "close all positions"',
+          );
+        }
+        logger.info("✓ agent-status routing intact (PnL/positions view)");
       },
     },
 

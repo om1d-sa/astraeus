@@ -33,6 +33,7 @@ const EXPECTED_ACTIONS = [
   "AUTONOMOUS_MODE",
   "CLOSE_ALL_POSITIONS",
   "TRADE_DIAGNOSTICS",
+  "AGENT_DEBUG",
   "AGENT_IDENTITY",
   "X402_PAY",
   "TRENDING",
@@ -139,7 +140,21 @@ describe("Action routing (validate)", () => {
     },
     {
       action: "TRADE_DIAGNOSTICS",
-      accept: ["run diagnostics", "health check", "is everything working"],
+      accept: ["run diagnostics", "health check", "is everything working", "debug trade", "why no trade"],
+      // Full-agent / skill-bundle debug defers to AGENT_DEBUG.
+      reject: ["debug skill bundles", "agent debug report"],
+    },
+    {
+      action: "AGENT_DEBUG",
+      accept: [
+        "debug skill bundles",
+        "agent debug report",
+        "debug everything",
+        "probe the skills",
+        "debug research skills",
+      ],
+      // Plain trade health stays with TRADE_DIAGNOSTICS; non-debug messages don't route here.
+      reject: ["run diagnostics", "health check", "debug trade"],
     },
     {
       action: "AGENT_IDENTITY",

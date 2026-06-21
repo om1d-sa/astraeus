@@ -8,7 +8,7 @@
  * put/call, max-pain, flow, funding, liquidations, skew) → aggregate sentiment
  * → LLM produces a calibrated directional call with an above/below threshold.
  *
- * Pure data sources (Deribit/Binance/OKX/Bybit/CoinGecko/CryptoCompare) — no
+ * Pure data sources (Deribit/Binance/OKX/Bybit/CoinGecko) — no
  * Sapience, no on-chain dependency. BNB degrades gracefully to futures/funding
  * + historical-vol signals since listed BNB options are thin.
  */

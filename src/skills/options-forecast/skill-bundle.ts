@@ -47,6 +47,42 @@ export function skillsEnabled(): boolean {
   return (process.env.CMC_SKILLS_ENABLED ?? "false").toLowerCase() === "true";
 }
 
+const hasContent = (v: unknown): boolean =>
+  typeof v === "string"
+    ? v.trim().length > 0
+    : v != null && typeof v === "object"
+      ? Object.keys(v as object).length > 0
+      : v != null;
+
+/**
+ * True if a skill's execute_skill payload is an error rather than a usable
+ * result. CMC validation/skill failures come back as a *successful* MCP response
+ * whose text is a JSON error envelope (top-level `error`, or a wrapped result
+ * with `success:false` / non-zero `exitCode`), so they slip past the
+ * transport-level `isError` flag and would otherwise be spliced into the reply.
+ */
+export function isErrorPayload(txt: string): boolean {
+  try {
+    const j = JSON.parse(txt) as {
+      error?: unknown;
+      result?: { success?: boolean; exitCode?: number; error?: unknown };
+    };
+    if (hasContent(j.error)) return true;
+    const r = j.result;
+    if (r && typeof r === "object") {
+      if (r.success === false) return true;
+      if (typeof r.exitCode === "number" && r.exitCode !== 0) return true;
+      if (hasContent(r.error)) return true;
+    }
+    return false;
+  } catch {
+    // Not JSON — fall back to known CMC error markers.
+    return /INVALID_ARGUMENT|INVALID_PARAMS|validation failed|"success"\s*:\s*false/i.test(
+      txt,
+    );
+  }
+}
+
 /** Resolve a comma-separated skill list from env, falling back to defaults. */
 export function skillList(envKey: string, fallback: string[]): string[] {
   const raw = process.env[envKey]?.trim();
@@ -59,14 +95,136 @@ export function skillList(envKey: string, fallback: string[]): string[] {
 }
 
 /**
+ * CMC skills that require a single `symbol` input. When a caller passes
+ * `opts.symbols`, these are fanned out — one execute_skill call per symbol — so a
+ * market-wide feature can cover several assets (e.g. BTC/ETH/BNB) at once.
+ */
+export const SYMBOL_SKILLS = new Set<string>([
+  "detect_funding_rate_regime_shift",
+  "review_mean_reversion_setup",
+  "detect_perp_bull_bear_divergence",
+  "review_etf_flow_vs_perp_sentiment",
+  "exchange_market_structure_monitor",
+  "detect_perp_momentum_exhaustion",
+]);
+
+type SkillJob = {
+  name: string;
+  label: string;
+  params: Record<string, unknown>;
+};
+
+/** Flatten an execute_skill MCP response to its text payload. */
+const skillResultText = (r: { content?: Array<{ text?: string }> }): string =>
+  (r.content ?? [])
+    .map((c) => c.text ?? "")
+    .join("\n")
+    .trim();
+
+/** One-line snippet of a payload for compact debug output. */
+const snippet = (s: string, max = 140): string =>
+  s.replace(/\s+/g, " ").trim().slice(0, max);
+
+/**
+ * Pull a human-readable one-liner from a CMC skill payload. CMC skills return a
+ * (often double-encoded) JSON envelope whose headline lives under a different key
+ * per skill type — `summary` for most, `conclusion` (e.g. the breakout scanner) or
+ * `decision` for others. Extract the first concise one (skipping long `analysis` /
+ * terse `title`) so replies show a clean sentence per skill instead of raw JSON.
+ * Returns undefined when none is present.
+ */
+export function extractSkillSummary(raw: string): string | undefined {
+  const tryParse = (s: string): unknown => {
+    try {
+      return JSON.parse(s);
+    } catch {
+      return undefined;
+    }
+  };
+  // First non-empty string value for `key`, descending into objects, arrays, and
+  // JSON-string fields (CMC double-encodes `output` as a JSON string).
+  const findKey = (v: unknown, key: string, depth: number): string | undefined => {
+    if (depth > 8 || v == null) return undefined;
+    if (typeof v === "string") {
+      const t = v.trim();
+      return t.startsWith("{") || t.startsWith("[")
+        ? findKey(tryParse(t), key, depth + 1)
+        : undefined;
+    }
+    if (Array.isArray(v)) {
+      for (const x of v) {
+        const f = findKey(x, key, depth + 1);
+        if (f) return f;
+      }
+      return undefined;
+    }
+    if (typeof v === "object") {
+      const obj = v as Record<string, unknown>;
+      if (typeof obj[key] === "string" && (obj[key] as string).trim())
+        return (obj[key] as string).trim();
+      for (const val of Object.values(obj)) {
+        const f = findKey(val, key, depth + 1);
+        if (f) return f;
+      }
+    }
+    return undefined;
+  };
+  const tree = tryParse(raw) ?? raw;
+  for (const key of ["summary", "conclusion", "decision"]) {
+    const found = findKey(tree, key, 0);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/**
+ * Expand a flat skill-name list into concrete execute_skill jobs: SYMBOL_SKILLS fan
+ * across `opts.symbols` (one call each, `symbol` merged in), everything else runs once
+ * with the shared (+ per-skill) params. Shared by {@link runSkillBundle} and
+ * {@link probeSkillBundle} so both build identical jobs.
+ */
+function buildJobs(
+  uniqueNames: string[],
+  params: Record<string, unknown>,
+  opts: {
+    symbols?: string[];
+    perSkillParams?: Record<string, Record<string, unknown>>;
+  },
+): SkillJob[] {
+  const jobs: SkillJob[] = [];
+  for (const name of uniqueNames) {
+    const merged = { ...params, ...(opts.perSkillParams?.[name] ?? {}) };
+    if (opts.symbols?.length && SYMBOL_SKILLS.has(name)) {
+      for (const symbol of opts.symbols)
+        jobs.push({
+          name,
+          label: `${name}:${symbol}`,
+          params: { ...merged, symbol },
+        });
+    } else {
+      jobs.push({ name, label: name, params: merged });
+    }
+  }
+  return jobs;
+}
+
+/**
  * Run a bundle of CMC skills via execute_skill (parallel, each bounded, best-effort).
  * Returns a concatenated text blob, or undefined if disabled / empty / all failed.
+ *
+ * `opts.symbols` fans every SYMBOL_SKILLS entry across the given symbols (one call
+ * each, `symbol` merged into params). `opts.perSkillParams` merges per-skill param
+ * overrides on top of the shared `params` (e.g. `assets` for an ETF-comparison skill).
  */
 export async function runSkillBundle(
   runtime: IAgentRuntime,
   uniqueNames: string[],
   params: Record<string, unknown> = {},
-  opts: { force?: boolean } = {},
+  opts: {
+    force?: boolean;
+    symbols?: string[];
+    perSkillParams?: Record<string, Record<string, unknown>>;
+  } = {},
 ): Promise<string | undefined> {
   // `force` lets explicit skill-driven commands (PORTFOLIO/LIQUIDATION) run even
   // when the auto-enrichment master toggle (CMC_SKILLS_ENABLED) is off.
@@ -77,70 +235,78 @@ export async function runSkillBundle(
   ) as unknown as McpLike | null;
   if (!mcp) return undefined;
   const timeoutMs = num("CMC_SKILLS_TIMEOUT_MS", 90_000);
-  const toText = (r: { content?: Array<{ text?: string }> }) =>
-    (r.content ?? [])
-      .map((c) => c.text ?? "")
-      .join("\n")
-      .trim();
+  const jobs = buildJobs(uniqueNames, params, opts);
 
-  const runOne = async (name: string): Promise<string | undefined> => {
+  const runOne = async (job: SkillJob): Promise<string | undefined> => {
     try {
       const exec = await raceTimeout(
         mcp.callTool(CMC_SERVER, "execute_skill", {
-          unique_name: name,
-          parameters: params,
+          unique_name: job.name,
+          parameters: job.params,
         }),
         timeoutMs,
       );
       if (!exec || exec.isError) return undefined;
-      const txt = toText(exec);
-      return txt ? `[${name}]\n${txt.slice(0, 1000)}` : undefined;
+      const txt = skillResultText(exec);
+      if (!txt) return undefined;
+      // CMC returns validation/skill errors as a *successful* MCP response whose
+      // payload is an error envelope — drop those so they don't pollute the reply.
+      if (isErrorPayload(txt)) {
+        logger.debug({ skill: job.label }, "CMC skill returned an error payload");
+        return undefined;
+      }
+      // Show the skill's human-readable summary, not its raw (double-encoded) JSON.
+      const summary = extractSkillSummary(txt);
+      return `• ${job.label}: ${summary ? snippet(summary, 300) : snippet(txt, 240)}`;
     } catch (e) {
-      logger.warn({ skill: name, err: String(e) }, "CMC skill skipped");
+      logger.warn({ skill: job.label, err: String(e) }, "CMC skill skipped");
       return undefined;
     }
   };
 
-  const parts = (await Promise.all(uniqueNames.map(runOne))).filter(
+  const parts = (await Promise.all(jobs.map(runOne))).filter(
     (p): p is string => Boolean(p),
   );
   return parts.length
-    ? `CMC SKILL ANALYSES:\n${parts.join("\n---\n")}`
+    ? `CMC SKILL ANALYSES:\n${parts.join("\n")}`
     : undefined;
 }
 
 // ---- Default skill bundles per feature (override via env) ----
 
+// MARKET overview is an OVERALL-MARKET read. Market-wide skills run on the shared
+// params ({ preview, lookback_days }). Per-symbol skills (SYMBOL_SKILLS) are fanned
+// across the majors (BTC/ETH/BNB) and `compare_etf_flow_quality` defaults to
+// assets BTC/ETH — both configured by the MARKET caller. Skills that must be pinned
+// to a specific event/allocation/treasury request (event / event_query /
+// request_class / current_allocation) stay excluded — those belong to the
+// event-, portfolio- and treasury-specific features.
 export const DEFAULT_MARKET_SKILLS = [
   "daily_market_overview",
   "btc_etf_institutional_demand",
   "macro_liquidity_monitor",
   "macro_financial_conditions",
   "macro_news_aggregator",
-  "detect_funding_rate_regime_shift",
   "build_daily_market_brief",
-  "decode_macro_event_impact",
   "screen_perp_accumulation_candidates",
   "detect_market_regime",
-  "detect_event_social_propagation_risk",
   "assess_macro_liquidity_risk_regime",
   "analyze_cross_asset_risk_regime",
-  "rank_institutional_treasury_flow_signals",
   "rank_short_squeeze_fuel_candidates",
-  "compare_etf_flow_quality",
   "detect_etf_flow_price_absorption",
   "analyze_btc_eth_etf_flow_impact",
-  "build_regime_aware_allocation",
+  "compare_etf_flow_quality",
   "track_narrative_rotation",
   "monitor_altcoin_season_transition",
-  "institutional_treasury_flow_monitor",
   "compare_sector_relative_strength",
+  "build_crypto_event_watchlist",
+  // Per-symbol skills — fanned across BTC/ETH/BNB by the MARKET caller.
+  "detect_funding_rate_regime_shift",
   "review_mean_reversion_setup",
   "detect_perp_bull_bear_divergence",
   "review_etf_flow_vs_perp_sentiment",
   "exchange_market_structure_monitor",
   "detect_perp_momentum_exhaustion",
-  "build_crypto_event_watchlist",
 ];
 
 export const DEFAULT_TRENDING_SKILLS = [
@@ -237,3 +403,167 @@ export const DEFAULT_LIQUIDATION_SKILLS = [
   "detect_volatility_squeeze_release",
   "estimate_large_trade_liquidity_risk",
 ];
+
+// ---- Skill-bundle debugging (AGENT_DEBUG) ----
+
+/** True if the CMC Skill Hub MCP service (`cmc-skill-hub`) is wired into the runtime. */
+export function mcpAvailable(runtime: IAgentRuntime): boolean {
+  return !!runtime.getService(McpService.serviceType);
+}
+
+/** A skill bundle wired into a feature: its label, env-override key, default list, and
+ *  the params/symbols the owning feature actually calls it with (so a debug probe is
+ *  faithful — skills whose required inputs aren't satisfied error out exactly as in prod). */
+export interface BundleSpec {
+  feature: string;
+  envKey: string;
+  defaults: string[];
+  params?: Record<string, unknown>;
+  symbols?: string[];
+  perSkillParams?: Record<string, Record<string, unknown>>;
+}
+
+/**
+ * Every CMC skill bundle the agent uses, in report order. The single source of truth
+ * the debug report iterates over; `skillList(envKey, defaults)` resolves the live list.
+ * The params mirror each feature's real {@link runSkillBundle} call site.
+ */
+export const SKILL_BUNDLES: readonly BundleSpec[] = [
+  {
+    feature: "Overall market",
+    envKey: "MARKET_SKILLS",
+    defaults: DEFAULT_MARKET_SKILLS,
+    params: { preview: true, lookback_days: 30 },
+    symbols: ["BTC", "ETH", "BNB"],
+    perSkillParams: { compare_etf_flow_quality: { assets: ["BTC", "ETH"] } },
+  },
+  {
+    feature: "Trending cryptos",
+    envKey: "TRENDING_SKILLS",
+    defaults: DEFAULT_TRENDING_SKILLS,
+    params: { preview: true },
+  },
+  {
+    feature: "Crypto research",
+    envKey: "RESEARCH_SKILLS",
+    defaults: DEFAULT_RESEARCH_SKILLS,
+    params: { symbol: "ETH" },
+  },
+  {
+    feature: "Portfolio analysis",
+    envKey: "PORTFOLIO_SKILLS",
+    defaults: DEFAULT_PORTFOLIO_SKILLS,
+    params: {
+      portfolio: [
+        { symbol: "BTC", pct: 50 },
+        { symbol: "ETH", pct: 50 },
+      ],
+      holdings: [
+        { symbol: "BTC", pct: 50 },
+        { symbol: "ETH", pct: 50 },
+      ],
+      focus: "risk_reduction",
+    },
+  },
+  {
+    feature: "Liquidation analysis",
+    envKey: "LIQUIDATION_SKILLS",
+    defaults: DEFAULT_LIQUIDATION_SKILLS,
+    params: { preview: true },
+  },
+  {
+    feature: "Forecast ETF leg",
+    envKey: "FORECAST_ETF_SKILLS",
+    defaults: DEFAULT_ETF_SKILLS,
+    params: { symbol: "ETH" },
+  },
+];
+
+/** Per-skill outcome from a live debug probe of a bundle. */
+export interface SkillProbeResult {
+  /** Job label — the unique_name, suffixed `:SYMBOL` for fanned symbol skills. */
+  skill: string;
+  status: "ok" | "error" | "timeout" | "empty";
+  /** Payload size on success, or a short reason on failure. */
+  detail: string;
+  /** Wall-clock time for the execute_skill call, in ms. */
+  ms: number;
+}
+
+/**
+ * Live-probe a skill bundle for debugging: run each skill via execute_skill (in
+ * parallel, each bounded by CMC_SKILLS_TIMEOUT_MS) and report a per-skill status —
+ * ok / error / timeout / empty — instead of merging text. Unlike {@link runSkillBundle}
+ * this ALWAYS runs (no CMC_SKILLS_ENABLED gate) because it's an explicit user debug
+ * action; it DOES spend CMC API credits. `opts.limit` caps how many jobs are probed
+ * (after symbol fan-out) so a quick check doesn't run the whole bundle. Returns []
+ * when the MCP service is unavailable.
+ */
+export async function probeSkillBundle(
+  runtime: IAgentRuntime,
+  uniqueNames: string[],
+  params: Record<string, unknown> = {},
+  opts: {
+    symbols?: string[];
+    perSkillParams?: Record<string, Record<string, unknown>>;
+    limit?: number;
+  } = {},
+): Promise<SkillProbeResult[]> {
+  const mcp = runtime.getService(
+    McpService.serviceType,
+  ) as unknown as McpLike | null;
+  if (!mcp) return [];
+  const timeoutMs = num("CMC_SKILLS_TIMEOUT_MS", 90_000);
+  let jobs = buildJobs(uniqueNames, params, opts);
+  if (opts.limit && opts.limit > 0) jobs = jobs.slice(0, opts.limit);
+
+  const probeOne = async (job: SkillJob): Promise<SkillProbeResult> => {
+    const t0 = Date.now();
+    try {
+      const exec = await raceTimeout(
+        mcp.callTool(CMC_SERVER, "execute_skill", {
+          unique_name: job.name,
+          parameters: job.params,
+        }),
+        timeoutMs,
+      );
+      const ms = Date.now() - t0;
+      if (!exec)
+        return {
+          skill: job.label,
+          status: "timeout",
+          detail: `no response within ${Math.round(timeoutMs / 1000)}s`,
+          ms,
+        };
+      if (exec.isError)
+        return {
+          skill: job.label,
+          status: "error",
+          detail: "MCP transport error (isError)",
+          ms,
+        };
+      const txt = skillResultText(exec);
+      if (!txt)
+        return { skill: job.label, status: "empty", detail: "empty payload", ms };
+      // CMC returns validation/skill failures as a *successful* MCP response whose
+      // payload is an error envelope — surface those as errors with the reason.
+      if (isErrorPayload(txt))
+        return {
+          skill: job.label,
+          status: "error",
+          detail: `error payload: ${snippet(txt)}`,
+          ms,
+        };
+      return { skill: job.label, status: "ok", detail: `${txt.length} chars`, ms };
+    } catch (e) {
+      return {
+        skill: job.label,
+        status: "error",
+        detail: snippet(String(e)),
+        ms: Date.now() - t0,
+      };
+    }
+  };
+
+  return Promise.all(jobs.map(probeOne));
+}

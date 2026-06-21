@@ -10,7 +10,6 @@
  * 3. OKX - Options open interest
  * 4. Bybit - Futures funding rates
  * 5. CoinGecko - Spot price backup
- * 6. CryptoCompare - Historical volatility calculation
  */
 
 import {
@@ -44,10 +43,16 @@ const API_CONFIGS = {
     baseUrl: "https://api.coingecko.com/api/v3",
     requiresAuth: false,
   },
-  cryptocompare: {
-    baseUrl: "https://min-api.cryptocompare.com/data",
-    requiresAuth: false,
-  },
+};
+
+// Browser-like default headers. Some venues (notably Deribit, behind Cloudflare)
+// drop/reset requests that arrive with no User-Agent — which surfaces from Bun's
+// fetch as a connection error ("Unable to connect…") rather than an HTTP status,
+// even though the same URL loads fine in a browser. Sending a UA fixes that.
+const DEFAULT_HEADERS: Record<string, string> = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+  Accept: "application/json, text/plain, */*",
 };
 
 // Helper for API requests with error handling
@@ -62,6 +67,7 @@ async function fetchWithTimeout(
   try {
     const response = await fetch(url, {
       ...options,
+      headers: { ...DEFAULT_HEADERS, ...(options.headers ?? {}) },
       signal: controller.signal,
     });
     return response;
@@ -369,63 +375,6 @@ async function fetchBybitData(asset: Asset): Promise<Partial<OptionsData>> {
   };
 }
 
-// ========== CRYPTOCOMPARE (FREE) ==========
-async function fetchCryptoCompareData(
-  asset: Asset,
-): Promise<Partial<OptionsData>> {
-  const symbol = asset;
-
-  // Fetch current price
-  const priceUrl = `${API_CONFIGS.cryptocompare.baseUrl}/price?fsym=${symbol}&tsyms=USD`;
-  const priceResponse = await safeJsonFetch<{ USD: number }>(
-    priceUrl,
-    {},
-    { USD: 0 },
-  );
-
-  // Fetch historical hourly data for volatility calculation
-  const histUrl = `${API_CONFIGS.cryptocompare.baseUrl}/v2/histohour?fsym=${symbol}&tsym=USD&limit=168`; // 7 days
-  const histResponse = await safeJsonFetch<{
-    Data: {
-      Data: Array<{ close: number; high: number; low: number; time: number }>;
-    };
-  }>(histUrl, {}, { Data: { Data: [] } });
-
-  // Calculate realized volatility from price changes
-  const prices = histResponse.Data?.Data || [];
-  let sumSquaredReturns = 0;
-  let returnCount = 0;
-
-  for (let i = 1; i < prices.length; i++) {
-    if (prices[i].close > 0 && prices[i - 1].close > 0) {
-      const logReturn = Math.log(prices[i].close / prices[i - 1].close);
-      sumSquaredReturns += logReturn * logReturn;
-      returnCount++;
-    }
-  }
-
-  // Annualized volatility (hourly data * sqrt(8760 hours/year))
-  const hourlyVariance = returnCount > 0 ? sumSquaredReturns / returnCount : 0;
-  const annualizedVol = Math.sqrt(hourlyVariance * 8760) * 100; // as percentage
-
-  return {
-    spotPrice: priceResponse.USD,
-    iv: {
-      current: 0,
-      historicalAvg: annualizedVol,
-      percentile: 50,
-      ivRank: 50,
-      term: {
-        shortTerm: annualizedVol,
-        mediumTerm: annualizedVol,
-        longTerm: annualizedVol,
-      },
-      skew: 0,
-    },
-    sources: ["cryptocompare"],
-  };
-}
-
 // ========== MERGE DATA FROM ALL SOURCES ==========
 function mergeOptionsData(
   asset: Asset,
@@ -649,7 +598,6 @@ export async function fetchOptionsData(asset: Asset): Promise<OptionsData> {
     fetchOKXData(asset), // Options OI
     fetchBybitData(asset), // Futures funding rates
     fetchCoinGeckoData(asset), // Spot price backup
-    fetchCryptoCompareData(asset), // Historical volatility
   ]);
 
   // Collect successful results

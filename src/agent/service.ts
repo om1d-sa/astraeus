@@ -13,7 +13,7 @@ import {
 import { gatherForecastEnrichment } from "../skills/options-forecast/enrich";
 import { parseTimeframe } from "../actions/forecast";
 import { quoteX402 } from "../exec/x402";
-import { checkGuardrails } from "../config/risk";
+import { checkGuardrails, shouldTakeProfit } from "../config/risk";
 
 const num = (key: string, fallback: number): number => {
   const v = process.env[key];
@@ -54,12 +54,44 @@ export interface ForecastTradeResult {
   forecastReasoning?: string;
 }
 
+/** One open position marked to market — entry vs current price, unrealized PnL. */
+export interface OpenPositionPnL {
+  id: string;
+  asset: string;
+  timeframe: ForecastTimeframe;
+  sizeUsd: number;
+  entryPrice: number;
+  currentPrice: number;
+  boughtAmount: number;
+  currentValueUsd: number;
+  pnlUsd: number;
+  pnlPct: number;
+  /** True if a live price was fetched (else currentPrice falls back to entry → flat PnL). */
+  priced: boolean;
+  openedAt: number;
+  closeAt: number;
+}
+
+/** Snapshot of all open positions with aggregate mark-to-market PnL. */
+export interface PositionsReport {
+  positions: OpenPositionPnL[];
+  totalCostUsd: number;
+  totalValueUsd: number;
+  totalPnlUsd: number;
+  totalPnlPct: number;
+  /** True if at least one position got a live price. */
+  anyPriced: boolean;
+}
+
 export interface TradingStatus {
   running: boolean;
   symbols: string[];
   intervalMs: number;
   mode: "paper" | "live";
   tradeSizeUsd: number;
+  /** Take-profit: close a position early once up this % (0/off when disabled). */
+  takeProfitPct: number;
+  takeProfitEnabled: boolean;
   /** Base (happy-path) timeframe used for each scheduled trade. */
   baseTimeframe: ForecastTimeframe;
   /** Current escalation depth (0 = base cadence; ≥1 = on the retry ladder). */
@@ -106,6 +138,8 @@ export class TradingService extends Service {
   private qualifyInFlight = false;
   /** True while a trading-loop cycle (forecast+trade) runs — the qualifier waits for it. */
   private cycleInFlight = false;
+  /** Periodic take-profit monitor — closes a position early once it's up takeProfitPct. */
+  private takeProfitTimer?: ReturnType<typeof setTimeout>;
   // --- Live risk-guardrail state (drawdown halt + per-UTC-day trade/volume caps) ---
   private peakEquityUsd = 0;
   private tradesToday = 0;
@@ -125,9 +159,14 @@ export class TradingService extends Service {
   readonly intervalMs: number;
   readonly retryMs: number;
   readonly tradeSizeUsd: number;
+  /** Trade size for the standalone Track-1 qualifying heartbeat (independent of the loop's tradeSizeUsd). */
+  readonly qualifyTradeSizeUsd: number;
   readonly startCashUsd: number;
   readonly autoTimeframe: ForecastTimeframe;
   readonly autoCmc: boolean;
+  /** Take-profit: close a position early once it's up this %, locking in gains. */
+  readonly takeProfitEnabled: boolean;
+  readonly takeProfitPct: number;
   /** 'live' = real on-chain swaps via TWAK; 'paper' = simulated. */
   readonly mode: "paper" | "live";
 
@@ -137,11 +176,16 @@ export class TradingService extends Service {
     this.intervalMs = num("AUTONOMOUS_INTERVAL_MS", 43_200_000); // 12h happy-path cadence
     this.retryMs = num("AUTONOMOUS_RETRY_MS", 3_600_000); // 1h between escalation retries
     this.tradeSizeUsd = num("RISK_MAX_TRADE_USD", 5);
+    this.qualifyTradeSizeUsd = num("TRACK1_QUALIFY_TRADE_USD", 1.5);
     this.startCashUsd = num("PAPER_START_CASH_USD", 15);
     this.autoTimeframe = parseTimeframe(
       process.env.AUTONOMOUS_TIMEFRAME ?? "daily",
     );
     this.autoCmc = /\bcmc\b/i.test(process.env.AUTONOMOUS_MODE ?? "");
+    this.takeProfitEnabled =
+      (process.env.RISK_TAKE_PROFIT_ENABLED ?? "false").toLowerCase() ===
+      "true";
+    this.takeProfitPct = num("RISK_TAKE_PROFIT_PCT", 10);
     // Live trading requires an explicit opt-in. Until then, paper mode.
     this.mode =
       (process.env.ENABLE_LIVE_TRADING ?? "").toLowerCase() === "true"
@@ -371,26 +415,30 @@ export class TradingService extends Service {
   private async closeForecastTrade(id: string): Promise<void> {
     const t = this.forecastTrades.get(id);
     if (!t || !this.executor || !this.provider) return;
+    // Claim the position SYNCHRONOUSLY — before any await — so concurrent closers
+    // (the auto-close timer, the take-profit monitor, close-all, and the overdue
+    // reconcile) can't each pass the guard above and sell the same position twice.
+    // Whoever deletes it first owns the sell; the others no-op on the early return.
+    this.forecastTrades.delete(id);
     const timer = this.timers.get(id);
     if (timer) clearTimeout(timer);
     this.timers.delete(id);
+    this.persistOpenTrades();
 
     let price = t.entryPrice;
     try {
-      const sig = await this.provider.getTokenSignals(["ETH"]);
+      const sig = await this.provider.getTokenSignals([t.asset]);
       price = sig[0]?.priceUsd || t.entryPrice;
     } catch {
       /* keep entry price as fallback */
     }
-    this.executor.mark?.({ ETH: price });
+    this.executor.mark?.({ [t.asset]: price });
     const swap = await this.executor.swap({
-      fromSymbol: "ETH",
+      fromSymbol: t.asset,
       toSymbol: "USDT",
       amountUsd: t.boughtAmount * price,
       maxSlippageBps: num("RISK_MAX_SLIPPAGE_BPS", 100),
     });
-    this.forecastTrades.delete(id);
-    this.persistOpenTrades();
     const pnlUsd = (price - t.entryPrice) * t.boughtAmount;
     logger.info(
       {
@@ -548,6 +596,8 @@ export class TradingService extends Service {
     void this.runCycle(this.autoTimeframe);
     // Start the standalone Track-1 qualifying heartbeat; first one is one interval out.
     this.scheduleQualifyCycle(num("TRACK1_QUALIFY_INTERVAL_MS", 43_200_000));
+    // Start the take-profit monitor (no-op unless RISK_TAKE_PROFIT_ENABLED=true).
+    this.scheduleTakeProfitCheck();
     return { ok: true };
   }
 
@@ -559,9 +609,62 @@ export class TradingService extends Service {
       this.loopTimer = undefined;
     }
     this.clearQualifyTimer();
+    this.clearTakeProfitTimer();
     this.nextRunAt = undefined;
     this.nextTimeframe = undefined;
     return true;
+  }
+
+  /** Re-arm the periodic take-profit monitor (off entirely unless enabled). */
+  private scheduleTakeProfitCheck(): void {
+    if (!this.loopActive || !this.takeProfitEnabled) return;
+    this.clearTakeProfitTimer();
+    const ms = num("RISK_TAKE_PROFIT_CHECK_MS", 300_000); // 5 min
+    this.takeProfitTimer = setTimeout(() => {
+      void this.checkTakeProfit().finally(() => this.scheduleTakeProfitCheck());
+    }, ms);
+  }
+
+  private clearTakeProfitTimer(): void {
+    if (this.takeProfitTimer) {
+      clearTimeout(this.takeProfitTimer);
+      this.takeProfitTimer = undefined;
+    }
+  }
+
+  /**
+   * Take-profit monitor — the OPPOSITE of the drawdown halt. Marks the current ETH
+   * price and closes EARLY any open position whose unrealized gain has reached
+   * takeProfitPct, locking in the profit instead of waiting out the timeframe.
+   * Best-effort: never throws, never blocks the loop.
+   */
+  async checkTakeProfit(): Promise<number> {
+    if (!this.takeProfitEnabled || !this.provider || !this.executor) return 0;
+    if (this.forecastTrades.size === 0) return 0;
+    let price = 0;
+    try {
+      const sig = await this.provider.getTokenSignals(["ETH"]);
+      price = sig[0]?.priceUsd ?? 0;
+    } catch {
+      return 0; // no price → don't act
+    }
+    if (price <= 0) return 0;
+    this.executor.mark?.({ ETH: price });
+    let closed = 0;
+    for (const [id, t] of [...this.forecastTrades]) {
+      if (shouldTakeProfit(t.entryPrice, price, this.takeProfitPct)) {
+        const gainPct = ((price - t.entryPrice) / t.entryPrice) * 100;
+        logger.info(
+          { id, entry: t.entryPrice, price, gainPct: gainPct.toFixed(1) },
+          `take-profit hit (+${this.takeProfitPct}%) — closing position early`,
+        );
+        await this.closeForecastTrade(id).catch((e) =>
+          logger.error({ err: String(e), id }, "take-profit close failed"),
+        );
+        closed += 1;
+      }
+    }
+    return closed;
   }
 
   /** Run one forecast-and-trade, then schedule the next cycle per the escalation rules. */
@@ -664,16 +767,25 @@ export class TradingService extends Service {
   }
 
   /**
-   * Buy the standard RISK_MAX_TRADE_USD size of ETH ($5 by default) and immediately
-   * sell it back to USDT — a guaranteed round-trip that registers a competition trade
-   * with ~zero market exposure (cost = fees + slippage). Returns whether it landed;
-   * the caller ({@link runQualifyCycle}) reschedules (12h on success, 5min on failure).
+   * Guaranteed competition round-trip of TRACK1_QUALIFY_TRADE_USD ($1.5 by default —
+   * independent of the loop's RISK_MAX_TRADE_USD) that registers a Track-1 trade with
+   * ~zero net market exposure (cost = fees + slippage). Fully self-contained and
+   * INDEPENDENT of the trading loop: it never reads/writes the loop's open-position
+   * map, so a successful main-loop trade never cancels it.
+   *
+   * Direction is chosen from what's available so the heartbeat still lands EVEN WHEN
+   * the main loop has deployed the USDT cash into an open ETH position:
+   *   - USDT cash ≥ size → buy ETH then sell it straight back (default).
+   *   - else ETH held ≥ size → sell that much ETH then immediately rebuy it.
+   * Either way the portfolio returns to its starting allocation. Returns whether it
+   * landed; the caller ({@link runQualifyCycle}) reschedules (interval on success,
+   * retry on failure).
    */
   private async doQualifyingTrade(): Promise<boolean> {
     if (!this.executor || !this.provider) return false;
     if (this.qualifyInFlight) return false; // never run two round-trips at once
     this.qualifyInFlight = true;
-    const sizeUsd = this.tradeSizeUsd;
+    const sizeUsd = this.qualifyTradeSizeUsd;
     const slippage = num("RISK_MAX_SLIPPAGE_BPS", 100);
     try {
       let price = 0;
@@ -689,30 +801,47 @@ export class TradingService extends Service {
       }
       this.executor.mark?.({ ETH: price });
       const pf = await this.executor.getPortfolio();
-      if (pf.cashUsd < sizeUsd) {
+      const ethUsd = pf.holdings.find((h) => h.symbol === "ETH")?.valueUsd ?? 0;
+
+      // Pick the round-trip direction from available funds. Prefer spending USDT cash;
+      // fall back to the ETH the main loop is holding so the safety trade still lands.
+      const legs =
+        pf.cashUsd >= sizeUsd
+          ? ([
+              { fromSymbol: "USDT", toSymbol: "ETH" },
+              { fromSymbol: "ETH", toSymbol: "USDT" },
+            ] as const)
+          : ethUsd >= sizeUsd
+            ? ([
+                { fromSymbol: "ETH", toSymbol: "USDT" },
+                { fromSymbol: "USDT", toSymbol: "ETH" },
+              ] as const)
+            : undefined;
+      if (!legs) {
         logger.warn(
-          { cashUsd: pf.cashUsd, sizeUsd },
-          "Track 1 qualifying trade — insufficient cash; will retry",
+          { cashUsd: pf.cashUsd, ethUsd, sizeUsd },
+          "Track 1 qualifying trade — neither USDT cash nor ETH ≥ size; will retry",
         );
         return false;
       }
-      const buy = await this.executor.swap({
-        fromSymbol: "USDT",
-        toSymbol: "ETH",
+
+      const open = await this.executor.swap({
+        fromSymbol: legs[0].fromSymbol,
+        toSymbol: legs[0].toSymbol,
         amountUsd: sizeUsd,
         maxSlippageBps: slippage,
       });
-      if (!buy.ok) {
+      if (!open.ok) {
         logger.warn(
-          { err: buy.error },
-          "Track 1 qualifying buy failed; will retry",
+          { err: open.error, leg: legs[0] },
+          "Track 1 qualifying first leg failed; will retry",
         );
         return false;
       }
-      // Immediately sell the freshly bought ETH back to USDT (minimize exposure).
-      const sell = await this.executor.swap({
-        fromSymbol: "ETH",
-        toSymbol: "USDT",
+      // Immediately reverse it to return to the starting allocation (minimize exposure).
+      const close = await this.executor.swap({
+        fromSymbol: legs[1].fromSymbol,
+        toSymbol: legs[1].toSymbol,
         amountUsd: sizeUsd,
         maxSlippageBps: slippage,
       });
@@ -723,10 +852,16 @@ export class TradingService extends Service {
         direction: "sideways",
         sizeUsd,
         reason: "Track 1 qualifying round-trip (guaranteed daily trade)",
-        txHash: buy.txHash,
+        txHash: open.txHash,
       };
       logger.info(
-        { sizeUsd, buyTx: buy.txHash, sellTx: sell.txHash, sellOk: sell.ok },
+        {
+          sizeUsd,
+          startedFrom: legs[0].fromSymbol,
+          openTx: open.txHash,
+          closeTx: close.txHash,
+          closeOk: close.ok,
+        },
         "Track 1 qualifying round-trip executed (competition daily-trade safety)",
       );
       return true;
@@ -742,6 +877,27 @@ export class TradingService extends Service {
   }
 
   async getStatus(): Promise<TradingStatus> {
+    // Refresh mark prices for held assets so paper-mode equity is valued at the
+    // CURRENT price. The in-memory price cache starts empty after a restart, so
+    // without this a held position would show $0 until the next trade cycle marks
+    // it. Paper-only: the live (TWAK) executor prices on-chain, so a fetch+mark
+    // there would just waste a CMC call.
+    if (this.mode === "paper" && this.provider && this.executor?.mark) {
+      const assets = [
+        ...new Set([...this.forecastTrades.values()].map((t) => t.asset)),
+      ];
+      if (assets.length) {
+        try {
+          const sigs = await this.provider.getTokenSignals(assets);
+          const px: Record<string, number> = {};
+          for (const s of sigs)
+            if (s?.symbol && s.priceUsd > 0) px[s.symbol] = s.priceUsd;
+          if (Object.keys(px).length) this.executor.mark(px);
+        } catch (e) {
+          logger.warn({ err: String(e) }, "getStatus: mark refresh failed");
+        }
+      }
+    }
     let portfolio: Portfolio | undefined;
     try {
       portfolio = this.executor
@@ -757,6 +913,8 @@ export class TradingService extends Service {
       intervalMs: this.intervalMs,
       mode: this.mode,
       tradeSizeUsd: this.tradeSizeUsd,
+      takeProfitPct: this.takeProfitPct,
+      takeProfitEnabled: this.takeProfitEnabled,
       baseTimeframe: this.autoTimeframe,
       retryStep: this.retryStep,
       nextTimeframe: this.nextTimeframe,
@@ -764,6 +922,68 @@ export class TradingService extends Service {
       portfolio,
       openTrades: [...this.forecastTrades.values()],
       lastResult: this.lastResult,
+    };
+  }
+
+  /**
+   * Live snapshot of every open forecast position with mark-to-market PnL. Marks each
+   * position's asset at the current CMC price; if a price can't be fetched it falls
+   * back to the entry price (flat PnL for that leg) rather than failing. Pure read —
+   * never trades, never mutates state.
+   */
+  async getPositions(): Promise<PositionsReport> {
+    const trades = [...this.forecastTrades.values()];
+    const prices: Record<string, number> = {};
+    let anyPriced = false;
+    const assets = [...new Set(trades.map((t) => t.asset))];
+    if (this.provider && assets.length) {
+      try {
+        const sigs = await this.provider.getTokenSignals(assets);
+        for (const s of sigs)
+          if (s?.symbol && s.priceUsd > 0) prices[s.symbol] = s.priceUsd;
+      } catch (e) {
+        logger.warn({ err: String(e) }, "getPositions: price fetch failed");
+      }
+    }
+    const positions: OpenPositionPnL[] = trades.map((t) => {
+      const live = prices[t.asset];
+      const priced = typeof live === "number" && live > 0;
+      if (priced) anyPriced = true;
+      const currentPrice = priced ? live : t.entryPrice;
+      const currentValueUsd = t.boughtAmount * currentPrice;
+      const pnlUsd = (currentPrice - t.entryPrice) * t.boughtAmount;
+      const pnlPct =
+        t.entryPrice > 0 ? (currentPrice / t.entryPrice - 1) * 100 : 0;
+      return {
+        id: t.id,
+        asset: t.asset,
+        timeframe: t.timeframe,
+        sizeUsd: t.sizeUsd,
+        entryPrice: t.entryPrice,
+        currentPrice,
+        boughtAmount: t.boughtAmount,
+        currentValueUsd,
+        pnlUsd,
+        pnlPct,
+        priced,
+        openedAt: t.openedAt,
+        closeAt: t.closeAt,
+      };
+    });
+    const totalCostUsd = positions.reduce(
+      (s, p) => s + p.boughtAmount * p.entryPrice,
+      0,
+    );
+    const totalValueUsd = positions.reduce((s, p) => s + p.currentValueUsd, 0);
+    const totalPnlUsd = totalValueUsd - totalCostUsd;
+    const totalPnlPct = totalCostUsd > 0 ? (totalPnlUsd / totalCostUsd) * 100 : 0;
+    return {
+      positions,
+      totalCostUsd,
+      totalValueUsd,
+      totalPnlUsd,
+      totalPnlPct,
+      anyPriced,
     };
   }
 
@@ -804,7 +1024,7 @@ export class TradingService extends Service {
     checks.push({
       name: "Risk limits",
       status: "info",
-      detail: `$${this.tradeSizeUsd}/trade · conviction ≥ ${num("RISK_MIN_CONVICTION", 60)}% · ${num("RISK_MAX_TRADES_PER_DAY", 2)} trades/day · slippage ≤ ${num("RISK_MAX_SLIPPAGE_BPS", 100) / 100}%`,
+      detail: `$${this.tradeSizeUsd}/trade · conviction ≥ ${num("RISK_MIN_CONVICTION", 60)}% · ${num("RISK_MAX_TRADES_PER_DAY", 2)} trades/day · slippage ≤ ${num("RISK_MAX_SLIPPAGE_BPS", 100) / 100}% · take-profit ${this.takeProfitEnabled ? `+${this.takeProfitPct}%` : "off"}`,
     });
     if (this.mode === "live") {
       const twak = isSet("TWAK_ACCESS_ID") && isSet("TWAK_HMAC_SECRET");

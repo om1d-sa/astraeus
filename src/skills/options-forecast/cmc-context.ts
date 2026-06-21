@@ -1,5 +1,6 @@
 import { type IAgentRuntime, logger } from '@elizaos/core';
 import { McpService } from '@elizaos/plugin-mcp';
+import { isErrorPayload } from './skill-bundle';
 
 const CMC_SERVER = 'cmc-skill-hub';
 
@@ -41,9 +42,18 @@ export async function fetchCmcOptionsContext(
         parameters: { symbol: asset },
       }),
     ]);
+    // CMC returns validation/skill errors as a *successful* MCP response whose body
+    // is a JSON error envelope — drop those so error JSON never reaches the forecast.
+    const usable = (r: { isError?: boolean; content?: Array<{ text?: string }> }) => {
+      if (r.isError) return undefined;
+      const txt = toText(r);
+      return txt && !isErrorPayload(txt) ? txt : undefined;
+    };
     const parts: string[] = [];
-    if (!iv.isError) parts.push(`IV term structure: ${toText(iv).slice(0, 1200)}`);
-    if (!skew.isError) parts.push(`Skew & smile: ${toText(skew).slice(0, 1200)}`);
+    const ivTxt = usable(iv);
+    const skewTxt = usable(skew);
+    if (ivTxt) parts.push(`IV term structure: ${ivTxt.slice(0, 1200)}`);
+    if (skewTxt) parts.push(`Skew & smile: ${skewTxt.slice(0, 1200)}`);
     return parts.length ? parts.join('\n\n') : undefined;
   } catch (e) {
     logger.warn({ err: e instanceof Error ? e.message : String(e) }, 'CMC options context fetch failed');

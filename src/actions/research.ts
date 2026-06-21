@@ -14,15 +14,29 @@ import {
   DEFAULT_RESEARCH_SKILLS,
 } from "../skills/options-forecast/skill-bundle";
 
-/** Pull a token symbol from the message (e.g. "research CAKE", "$BNB", "dd on AAVE"). */
-function parseSymbol(text: string): string | undefined {
-  const m =
-    text.match(
-      /\b(?:research|dd|due[\s-]?diligence|fundamentals|tokenomics|about|on)\s+\$?([A-Za-z]{2,12})\b/i,
-    ) ||
-    text.match(/\$([A-Za-z]{2,12})\b/) ||
-    text.match(/\b([A-Z]{2,6})\b/);
-  return m?.[1]?.toUpperCase();
+// English filler words that look like symbols but are never the token here. Note:
+// "ON"/"IN" are intentionally NOT here (they're real CMC tokens) — the regex below
+// instead treats a leading "on/about/the/…" as filler so "research on CAKE" → CAKE,
+// while "research ON" (no token after) still resolves to the ON token.
+const STOPWORDS = new Set([
+  "THE", "AND", "FOR", "ABOUT", "WITH", "FROM", "THIS", "THAT", "WHAT", "WHATS",
+  "PLEASE", "TOKEN", "COIN", "CRYPTO", "PRICE", "RESEARCH", "FUNDAMENTALS",
+  "TOKENOMICS", "ANALYZE", "DUE", "DILIGENCE",
+]);
+
+/** Pull a token symbol from the message (e.g. "research CAKE", "$BNB", "dd on AAVE",
+ *  "research on CAKE" → CAKE — a leading "on/about/the/for/of" is treated as filler). */
+export function parseSymbol(text: string): string | undefined {
+  const patterns = [
+    /\b(?:research|dd|due[\s-]?diligence|fundamentals|tokenomics|analyze)\s+(?:on|about|the|for|of)?\s*\$?([A-Za-z]{2,12})\b/i,
+    /\$([A-Za-z]{2,12})\b/,
+    /\b([A-Z]{2,6})\b/,
+  ];
+  for (const re of patterns) {
+    const sym = text.match(re)?.[1]?.toUpperCase();
+    if (sym && !STOPWORDS.has(sym)) return sym;
+  }
+  return undefined;
 }
 
 /**

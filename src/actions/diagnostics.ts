@@ -41,7 +41,7 @@ export const diagnosticsAction: Action = {
     _state?: State,
   ): Promise<boolean> => {
     const t = (message.content?.text ?? "").toLowerCase();
-    return /\b(diagnostics?|health\s*check|self[\s-]*test|system\s*check|readiness|is everything (ok|working|wired))\b/.test(
+    return /\b(trade\s+diagnostics|debug\s+trade|why\s+no\s+trade|diagnostics?|health\s*check|self[\s-]*test|system\s*check|readiness|is everything (ok|working|wired))\b/.test(
       t,
     );
   },

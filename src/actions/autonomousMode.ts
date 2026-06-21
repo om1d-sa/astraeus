@@ -6,7 +6,11 @@ import {
   type Memory,
   type State,
 } from "@elizaos/core";
-import { TradingService, type TradingStatus } from "../agent/service";
+import {
+  TradingService,
+  type TradingStatus,
+  type PositionsReport,
+} from "../agent/service";
 
 type Intent = "start" | "stop" | "status";
 
@@ -18,10 +22,24 @@ function parseIntent(text: string): Intent {
   return "status";
 }
 
-function formatStatus(st: TradingStatus): string {
+const fmtUsd = (n: number): string =>
+  `${n < 0 ? "-" : ""}$${Math.abs(n).toFixed(2)}`;
+const fmtPct = (n: number): string => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+const pnlDot = (pnl: number): string =>
+  pnl > 0 ? "🟢" : pnl < 0 ? "🔴" : "⚪";
+/** Compact "closes in 3h 12m" / "12m" / "now". */
+const closesIn = (closeAt: number): string => {
+  const ms = closeAt - Date.now();
+  if (ms <= 0) return "now";
+  const h = Math.floor(ms / 3_600_000);
+  const m = Math.floor((ms % 3_600_000) / 60_000);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+};
+
+function formatStatus(st: TradingStatus, pos: PositionsReport): string {
   const lines = [
     `Autonomous trading: ${st.running ? "🟢 RUNNING" : "⚪ stopped"} (${st.mode} mode)`,
-    `Strategy: forecast-driven ETH spot · $${st.tradeSizeUsd}/trade · ${st.baseTimeframe} every ${Math.round(st.intervalMs / 3_600_000)}h`,
+    `Strategy: forecast-driven ETH spot · $${st.tradeSizeUsd}/trade · ${st.baseTimeframe} every ${Math.round(st.intervalMs / 3_600_000)}h${st.takeProfitEnabled ? ` · take-profit +${st.takeProfitPct}%` : ""}`,
   ];
   if (st.running && st.nextTimeframe && st.nextRunAt) {
     const retry = st.retryStep > 0 ? ` · retry #${st.retryStep}` : "";
@@ -39,15 +57,20 @@ function formatStatus(st: TradingStatus): string {
       );
     }
   }
-  if (st.openTrades.length) {
-    lines.push(`Open trades (${st.openTrades.length}):`);
-    for (const t of st.openTrades) {
+  if (pos.positions.length) {
+    lines.push(`Open positions (${pos.positions.length}):`);
+    for (const p of pos.positions) {
       lines.push(
-        `  • ${t.asset} $${t.sizeUsd} @ $${t.entryPrice.toFixed(2)} (${t.timeframe}) → closes ${new Date(t.closeAt).toUTCString()}`,
+        `  ${pnlDot(p.pnlUsd)} ${p.asset} ${fmtUsd(p.sizeUsd)} @ $${p.entryPrice.toFixed(2)} → $${p.currentPrice.toFixed(2)}${p.priced ? "" : "*"} · PnL ${fmtUsd(p.pnlUsd)} (${fmtPct(p.pnlPct)}) · ${p.timeframe}, closes in ${closesIn(p.closeAt)}`,
       );
     }
+    lines.push(
+      `  ${pnlDot(pos.totalPnlUsd)} Unrealized PnL: ${fmtUsd(pos.totalPnlUsd)} (${fmtPct(pos.totalPnlPct)}) on ${fmtUsd(pos.totalCostUsd)} cost`,
+    );
+    if (!pos.anyPriced)
+      lines.push("  * live price unavailable — PnL shown at entry (flat)");
   } else {
-    lines.push("Open trades: none");
+    lines.push("Open positions: none");
   }
   if (st.lastResult) {
     const r = st.lastResult;
@@ -73,7 +96,7 @@ export const autonomousModeAction: Action = {
     "STOP_TRADING",
   ],
   description:
-    'Start, stop, or check the autonomous trading loop (paper mode). Use for "start auto", "stop auto", "agent status", "how are we doing", "show portfolio".',
+    'Start, stop, or check the autonomous trading loop (paper mode). The status view lists every OPEN position with live mark-to-market PnL (entry vs current price, unrealized $ and %). Use for "start auto", "stop auto", "agent status", "positions", "show pnl", "what am I holding", "show portfolio".',
 
   validate: async (
     _runtime: IAgentRuntime,
@@ -83,7 +106,7 @@ export const autonomousModeAction: Action = {
     const t = (message.content?.text ?? "").toLowerCase();
     // Defer to CLOSE_ALL_POSITIONS when the user wants to close/sell/exit holdings.
     if (/\b(close|sell|exit|flatten|liquidate)\b/.test(t)) return false;
-    return /\b(auto|autonomous|trading (loop|status|mode)|agent status|start trad|stop trad|paper trad|pnl|portfolio|positions?)\b/.test(
+    return /\b(auto|autonomous|trading (loop|status|mode)|agent status|start trad|stop trad|paper trad|pnl|p&l|unrealized|holdings?|holding|portfolio|positions?)\b/.test(
       t,
     );
   },
@@ -125,12 +148,20 @@ export const autonomousModeAction: Action = {
         await callback?.({ text, actions: ["AUTONOMOUS_MODE"] });
         return { text, success: true, values: { running: svc.running } };
       }
-      const st = await svc.getStatus();
+      const [st, pos] = await Promise.all([
+        svc.getStatus(),
+        svc.getPositions(),
+      ]);
       await callback?.({
-        text: formatStatus(st),
+        text: formatStatus(st, pos),
         actions: ["AUTONOMOUS_MODE"],
       });
-      return { text: "status", success: true, data: { status: st } };
+      return {
+        text: "status",
+        success: true,
+        values: { openPositions: pos.positions.length, unrealizedPnlUsd: pos.totalPnlUsd },
+        data: { status: st, positions: pos },
+      };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       await callback?.({ text: `Autonomous mode error: ${msg}`, error: true });
@@ -158,7 +189,17 @@ export const autonomousModeAction: Action = {
       {
         name: "Astraeus",
         content: {
-          text: "Autonomous trading: 🟢 RUNNING …",
+          text: "Autonomous trading: 🟢 RUNNING …\nOpen positions (1):\n  🟢 ETH $5.00 @ $3000.00 → $3300.00 · PnL +$0.50 (+10.00%) · daily, closes in 18h 4m\n  🟢 Unrealized PnL: +$0.50 (+10.00%) on $5.00 cost",
+          actions: ["AUTONOMOUS_MODE"],
+        },
+      },
+    ],
+    [
+      { name: "{{name1}}", content: { text: "what am I holding right now?" } },
+      {
+        name: "Astraeus",
+        content: {
+          text: "Autonomous trading: ⚪ stopped …\nOpen positions: none",
           actions: ["AUTONOMOUS_MODE"],
         },
       },

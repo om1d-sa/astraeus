@@ -18,6 +18,15 @@ import {
   OPENROUTER_CONFIG,
 } from "../../config/models";
 
+const num = (key: string, fallback: number): number => {
+  const v = process.env[key];
+  const n = v ? Number(v) : NaN;
+  return Number.isFinite(n) ? n : fallback;
+};
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((res) => setTimeout(res, ms));
+
 // Timeframe configurations
 const TIMEFRAME_CONFIG: Record<
   ForecastTimeframe,
@@ -322,31 +331,64 @@ Respond in this exact JSON format:
     `[PricePredictor] Calling OpenRouter with model: ${MODELS.reasoning}`,
   );
 
-  const response = await fetch(OPENROUTER_CONFIG.chatEndpoint, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      model: MODELS.reasoning,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a professional options market analyst. Provide precise, calibrated price forecasts based on options market data. Always respond with valid JSON.",
-        },
-        { role: "user", content: prompt },
-      ],
-      temperature: 0.3,
-      max_tokens: 500,
-    }),
-  });
+  const callOnce = (): Promise<Response> =>
+    fetch(OPENROUTER_CONFIG.chatEndpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: MODELS.reasoning,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a professional options market analyst. Provide precise, calibrated price forecasts based on options market data. Always respond with valid JSON.",
+          },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.3,
+        max_tokens: 500,
+      }),
+    });
 
-  if (!response.ok) {
-    const errorBody = await response.text().catch(() => "Unknown error");
-    console.error(
-      `[PricePredictor] OpenRouter API error: ${response.status} - ${errorBody}`,
+  // Retry on TRANSIENT failures only: network blips (fetch throws — "Unable to
+  // connect", socket reset) and 408/429/5xx. Auth/400/other 4xx are real — fail fast.
+  const maxAttempts = Math.max(1, num("FORECAST_LLM_RETRIES", 3));
+  const retryMs = num("FORECAST_LLM_RETRY_MS", 1500);
+  let response: Response | undefined;
+  let lastErr = "";
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let r: Response;
+    try {
+      r = await callOnce();
+    } catch (e) {
+      lastErr = e instanceof Error ? e.message : String(e);
+      if (attempt === maxAttempts)
+        throw new Error(
+          `OpenRouter call failed after ${maxAttempts} attempts: ${lastErr}`,
+        );
+      console.warn(
+        `[PricePredictor] network error "${lastErr}", retrying (${attempt}/${maxAttempts})…`,
+      );
+      await sleep(retryMs * attempt);
+      continue;
+    }
+    if (r.ok) {
+      response = r;
+      break;
+    }
+    const transient = r.status === 408 || r.status === 429 || r.status >= 500;
+    const errorBody = await r.text().catch(() => "Unknown error");
+    lastErr = `OpenRouter API error: ${r.status} - ${errorBody}`;
+    if (!transient || attempt === maxAttempts) {
+      console.error(`[PricePredictor] ${lastErr}`);
+      throw new Error(lastErr);
+    }
+    console.warn(
+      `[PricePredictor] transient ${r.status}, retrying (${attempt}/${maxAttempts})…`,
     );
-    throw new Error(`OpenRouter API error: ${response.status} - ${errorBody}`);
+    await sleep(retryMs * attempt);
   }
+  if (!response) throw new Error(`OpenRouter call failed: ${lastErr}`);
 
   const result = await response.json();
   const content = result.choices?.[0]?.message?.content;

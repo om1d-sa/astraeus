@@ -6,6 +6,7 @@ import { cmcSkillAction } from "./actions/cmcSkill";
 import { autonomousModeAction } from "./actions/autonomousMode";
 import { closeAllAction } from "./actions/closeAll";
 import { diagnosticsAction } from "./actions/diagnostics";
+import { agentDebugAction } from "./actions/agentDebug";
 import { agentIdentityAction } from "./actions/agentIdentity";
 import { x402PayAction } from "./actions/x402Pay";
 import { trendingAction } from "./actions/trending";
@@ -40,6 +41,7 @@ export const tradingPlugin: Plugin = {
     autonomousModeAction,
     closeAllAction,
     diagnosticsAction,
+    agentDebugAction,
     agentIdentityAction,
     x402PayAction,
     trendingAction,

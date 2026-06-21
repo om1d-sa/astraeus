@@ -13,7 +13,7 @@
 
 const num = (key: string, fallback: number): number => {
   const raw = process.env[key];
-  if (raw === undefined || raw.trim() === '') return fallback;
+  if (raw === undefined || raw.trim() === "") return fallback;
   const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
@@ -39,14 +39,14 @@ export interface RiskConfig {
 
 export function getRiskConfig(): RiskConfig {
   return {
-    maxDrawdownPct: num('RISK_MAX_DRAWDOWN_PCT', 20), // DQ gate is ~30%; stay clear of it
-    maxTradeUsd: num('RISK_MAX_TRADE_USD', 25),
-    maxTradesPerDay: num('RISK_MAX_TRADES_PER_DAY', 8),
-    maxDailyVolumeUsd: num('RISK_MAX_DAILY_VOLUME_USD', 150),
-    minTradesPerDay: num('RISK_MIN_TRADES_PER_DAY', 1), // competition requires >= 1/day
-    maxSlippageBps: num('RISK_MAX_SLIPPAGE_BPS', 100), // 1%
-    minConviction: num('RISK_MIN_CONVICTION', 60),
-    minCashReservePct: num('RISK_MIN_CASH_RESERVE_PCT', 20),
+    maxDrawdownPct: num("RISK_MAX_DRAWDOWN_PCT", 20), // DQ gate is ~30%; stay clear of it
+    maxTradeUsd: num("RISK_MAX_TRADE_USD", 25),
+    maxTradesPerDay: num("RISK_MAX_TRADES_PER_DAY", 8),
+    maxDailyVolumeUsd: num("RISK_MAX_DAILY_VOLUME_USD", 150),
+    minTradesPerDay: num("RISK_MIN_TRADES_PER_DAY", 1), // competition requires >= 1/day
+    maxSlippageBps: num("RISK_MAX_SLIPPAGE_BPS", 100), // 1%
+    minConviction: num("RISK_MIN_CONVICTION", 60),
+    minCashReservePct: num("RISK_MIN_CASH_RESERVE_PCT", 20),
   };
 }
 
@@ -72,24 +72,63 @@ export interface GuardrailContext {
  * Pure pre-trade gate. Returns the FIRST guardrail that blocks the trade so the
  * agent can explain exactly why it declined. Call this before signing anything.
  */
-export function checkGuardrails(ctx: GuardrailContext, cfg: RiskConfig = getRiskConfig()): GuardrailDecision {
+export function checkGuardrails(
+  ctx: GuardrailContext,
+  cfg: RiskConfig = getRiskConfig(),
+): GuardrailDecision {
   if (ctx.currentDrawdownPct >= cfg.maxDrawdownPct) {
-    return { allowed: false, reason: `drawdown ${ctx.currentDrawdownPct.toFixed(1)}% >= cap ${cfg.maxDrawdownPct}%` };
+    return {
+      allowed: false,
+      reason: `drawdown ${ctx.currentDrawdownPct.toFixed(1)}% >= cap ${cfg.maxDrawdownPct}%`,
+    };
   }
   if (!ctx.isTokenEligible) {
-    return { allowed: false, reason: `${ctx.tokenSymbol} not on eligible-token allowlist` };
+    return {
+      allowed: false,
+      reason: `${ctx.tokenSymbol} not on eligible-token allowlist`,
+    };
   }
   if (ctx.conviction < cfg.minConviction) {
-    return { allowed: false, reason: `conviction ${ctx.conviction} < min ${cfg.minConviction}` };
+    return {
+      allowed: false,
+      reason: `conviction ${ctx.conviction} < min ${cfg.minConviction}`,
+    };
   }
   if (ctx.tradeUsd > cfg.maxTradeUsd) {
-    return { allowed: false, reason: `trade $${ctx.tradeUsd} > per-trade cap $${cfg.maxTradeUsd}` };
+    return {
+      allowed: false,
+      reason: `trade $${ctx.tradeUsd} > per-trade cap $${cfg.maxTradeUsd}`,
+    };
   }
   if (ctx.tradesToday >= cfg.maxTradesPerDay) {
-    return { allowed: false, reason: `daily trade count ${ctx.tradesToday} >= cap ${cfg.maxTradesPerDay}` };
+    return {
+      allowed: false,
+      reason: `daily trade count ${ctx.tradesToday} >= cap ${cfg.maxTradesPerDay}`,
+    };
   }
   if (ctx.volumeTodayUsd + ctx.tradeUsd > cfg.maxDailyVolumeUsd) {
-    return { allowed: false, reason: `daily volume would exceed cap $${cfg.maxDailyVolumeUsd}` };
+    return {
+      allowed: false,
+      reason: `daily volume would exceed cap $${cfg.maxDailyVolumeUsd}`,
+    };
   }
   return { allowed: true };
+}
+
+/**
+ * Take-profit gate — the OPPOSITE of the drawdown cap. Returns true when an open
+ * long's unrealized gain has reached the take-profit target, so the agent can close
+ * the position EARLY and lock in the profit instead of waiting out the timeframe.
+ * Pure + deterministic. Any zero/negative/non-finite input → false (never forces a
+ * close on bad data).
+ */
+export function shouldTakeProfit(
+  entryPrice: number,
+  currentPrice: number,
+  takeProfitPct: number,
+): boolean {
+  if (!(entryPrice > 0) || !(currentPrice > 0) || !(takeProfitPct > 0))
+    return false;
+  const gainPct = ((currentPrice - entryPrice) / entryPrice) * 100;
+  return gainPct >= takeProfitPct;
 }

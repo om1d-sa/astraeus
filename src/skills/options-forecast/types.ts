@@ -15,8 +15,7 @@ export type OptionsDataSource =
   | 'binance'      // Futures + options
   | 'okx'          // Futures + options
   | 'bybit'        // Futures + options
-  | 'coingecko'    // Spot prices + market data
-  | 'cryptocompare'; // Historical + volatility
+  | 'coingecko';   // Spot prices + market data
 
 // Greek values for options
 export interface OptionsGreeks {

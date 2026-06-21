@@ -1,45 +1,34 @@
 /**
- * Centralized Model Configuration
- * All model references should import from here to avoid duplication.
- * The source of truth is character.ts - this file extracts those values.
+ * Forecast-predictor model config.
+ *
+ * The source of truth for ALL models is character.ts. This module exists ONLY for
+ * the forecast predictor (predictor.ts), which calls the OpenRouter API DIRECTLY
+ * (outside the ElizaOS plugin tiers) and so needs a plain model id.
+ *
+ * Every OTHER model path — SMALL / LARGE / EMBEDDING — is handled by the
+ * @elizaos/plugin-openrouter runtime via character.settings (OPENROUTER_*_MODEL),
+ * NOT here. That's why this file exposes only `reasoning`: the medium tier the
+ * predictor consumes. (It previously also defined search / forecast / embedding /
+ * default entries, but nothing read them and names like `forecast` were misleading
+ * — the forecast path actually uses `reasoning`. Dropped to avoid the footgun.)
  */
 
 import { character } from "../character";
 
-// Type for model settings (ElizaOS doesn't export this properly)
 interface ModelSettings {
-  small?: string;
   medium?: string;
-  large?: string;
-  embedding?: string;
 }
 
-// Extract model IDs from character settings (remove "openrouter:" prefix for direct API calls)
-const extractModelId = (model: string): string => {
-  return model.replace("openrouter:", "");
-};
+// Strip the "openrouter:" prefix — the predictor hits the OpenRouter API directly.
+const extractModelId = (model: string): string => model.replace("openrouter:", "");
 
-// Get models from character settings with proper typing
 const models = (character.settings?.models || {}) as ModelSettings;
-const embeddingModel = character.settings?.embeddingModel as string | undefined;
-const defaultModel = character.settings?.model as string | undefined;
 
-// Model configuration - single source of truth derived from character.ts
+// The only model this module exposes: the forecast predictor's reasoning model,
+// derived from settings.models.medium (MEDIUM_MODEL in character.ts). The fallback
+// only fires if character.settings.models is empty (it never is).
 export const MODELS = {
-  // For search tasks (small/fast)
-  search: extractModelId(models.small || "google/gemini-3-pro-preview"),
-
-  // For reasoning and text generation (medium)
-  reasoning: extractModelId(models.medium || "openai/gpt-5.2-pro"),
-
-  // For forecast, predict, calculate tasks (large)
-  forecast: extractModelId(models.large || "anthropic/claude-opus-4.5"),
-
-  // For embeddings
-  embedding: extractModelId(embeddingModel || "openai/text-embedding-3-large"),
-
-  // Default model (same as forecast/large)
-  default: extractModelId(defaultModel || "anthropic/claude-opus-4.5"),
+  reasoning: extractModelId(models.medium || "anthropic/claude-sonnet-4.6"),
 } as const;
 
 // OpenRouter API configuration
@@ -61,6 +50,3 @@ export function getOpenRouterHeaders(): Record<string, string> {
     "Content-Type": "application/json",
   };
 }
-
-// Export for reference
-export type ModelType = keyof typeof MODELS;

@@ -10,6 +10,10 @@ import {
 import { logger, type IAgentRuntime } from "@elizaos/core";
 import {
   runSkillBundle,
+  probeSkillBundle,
+  extractSkillSummary,
+  mcpAvailable,
+  SKILL_BUNDLES,
   DEFAULT_MARKET_SKILLS,
   DEFAULT_TRENDING_SKILLS,
   DEFAULT_RESEARCH_SKILLS,
@@ -49,10 +53,10 @@ function mockRuntime(
   return { getService: () => mcp } as unknown as IAgentRuntime;
 }
 
-// Count how many skills came back (one "[name]" block per returned skill).
+// Count how many skills came back (one "• name: …" bullet line per returned skill).
 function returnedCount(out: string | undefined): number {
   if (!out) return 0;
-  return (out.match(/\n---\n/g)?.length ?? 0) + 1;
+  return out.match(/^• /gm)?.length ?? 0;
 }
 
 const names = (n: number) => Array.from({ length: n }, (_, i) => `skill_${i}`);
@@ -74,7 +78,7 @@ describe("runSkillBundle", () => {
 
   it("runs ALL skills in parallel — total ≈ slowest, not the sum", async () => {
     process.env.CMC_SKILLS_TIMEOUT_MS = "2000";
-    const N = 29; // the market bundle size
+    const N = 29; // a large bundle — exercise heavy parallel fan-out
     const rt = mockRuntime(() => 100); // each "skill" takes 100ms
     const t0 = Date.now();
     const out = await runSkillBundle(rt, names(N), {}, { force: true });
@@ -103,6 +107,96 @@ describe("runSkillBundle", () => {
     expect(returnedCount(out)).toBe(3); // 5 - 2 errored
   });
 
+  it("drops skills whose PAYLOAD is an error (not the transport isError flag)", async () => {
+    process.env.CMC_SKILLS_ENABLED = "true";
+    // CMC returns validation/skill errors as a *successful* MCP response whose
+    // text is a JSON error envelope — two shapes seen in the wild.
+    const payloadFor = (name: string): string =>
+      name === "skill_0"
+        ? JSON.stringify({
+            result: {},
+            error: {
+              code: "INVALID_ARGUMENT",
+              message: "required property 'preview' not found",
+            },
+          })
+        : name === "skill_1"
+          ? JSON.stringify({
+              result: { error: "", exitCode: 1, output: "{}", success: false },
+            })
+          : `{"skill":"${name}","result":{"type":"evidence_pack","data":{"status":"ok"}}}`;
+    const rt = {
+      getService: () => ({
+        async callTool(
+          _s: string,
+          _t: string,
+          args?: Record<string, unknown>,
+        ) {
+          const name = String(
+            (args as { unique_name?: string })?.unique_name ?? "",
+          );
+          return { content: [{ text: payloadFor(name) }] };
+        },
+      }),
+    } as unknown as IAgentRuntime;
+    const out = await runSkillBundle(rt, names(5), {});
+    expect(returnedCount(out)).toBe(3); // skill_0 (validation) + skill_1 (exitCode 1) dropped
+  });
+
+  it("fans symbol skills across opts.symbols and applies per-skill param overrides", async () => {
+    process.env.CMC_SKILLS_ENABLED = "true";
+    const calls: Array<{ name: string; params: Record<string, unknown> }> = [];
+    const rt = {
+      getService: () => ({
+        async callTool(
+          _s: string,
+          _t: string,
+          args?: Record<string, unknown>,
+        ) {
+          const a = args as {
+            unique_name?: string;
+            parameters?: Record<string, unknown>;
+          };
+          calls.push({
+            name: String(a?.unique_name ?? ""),
+            params: a?.parameters ?? {},
+          });
+          return { content: [{ text: '{"result":{"data":{"status":"ok"}}}' }] };
+        },
+      }),
+    } as unknown as IAgentRuntime;
+    const list = [
+      "detect_perp_momentum_exhaustion", // symbol skill → fanned
+      "compare_etf_flow_quality", // per-skill override
+      "daily_market_overview", // plain
+    ];
+    const out = await runSkillBundle(
+      rt,
+      list,
+      { preview: true },
+      {
+        symbols: ["BTC", "ETH", "BNB"],
+        perSkillParams: { compare_etf_flow_quality: { assets: ["BTC", "ETH"] } },
+      },
+    );
+    expect(returnedCount(out)).toBe(5); // 3 (fanned) + 1 + 1
+
+    // Symbol skill ran once per major, each carrying the shared `preview` param.
+    const sym = calls.filter((c) => c.name === "detect_perp_momentum_exhaustion");
+    expect(sym.map((c) => c.params.symbol).sort()).toEqual(["BNB", "BTC", "ETH"]);
+    expect(sym.every((c) => c.params.preview === true)).toBe(true);
+    expect(out).toContain("detect_perp_momentum_exhaustion:BTC");
+
+    // Per-skill override merged on top of the shared params.
+    const etf = calls.find((c) => c.name === "compare_etf_flow_quality");
+    expect(etf?.params.assets).toEqual(["BTC", "ETH"]);
+    expect(etf?.params.preview).toBe(true);
+
+    // Plain skill: shared params only, never gets a symbol.
+    const plain = calls.find((c) => c.name === "daily_market_overview");
+    expect(plain?.params.symbol).toBeUndefined();
+  });
+
   it("is gated OFF when CMC_SKILLS_ENABLED is unset and not forced", async () => {
     delete process.env.CMC_SKILLS_ENABLED;
     const out = await runSkillBundle(mockRuntime(() => 5), names(3), {});
@@ -129,10 +223,141 @@ describe("runSkillBundle", () => {
   });
 });
 
+describe("probeSkillBundle (AGENT_DEBUG skill-bundle debug)", () => {
+  // A runtime whose execute_skill returns ok / error-payload / empty per skill name,
+  // so we can assert the probe classifies each outcome (no real CMC calls).
+  function probeRuntime(): IAgentRuntime {
+    return {
+      getService: () => ({
+        async callTool(_s: string, _t: string, args?: Record<string, unknown>) {
+          const name = String(
+            (args as { unique_name?: string })?.unique_name ?? "",
+          );
+          if (name === "skill_err")
+            return {
+              content: [
+                {
+                  text: JSON.stringify({
+                    error: { code: "INVALID_ARGUMENT", message: "missing input" },
+                  }),
+                },
+              ],
+            };
+          if (name === "skill_empty") return { content: [{ text: "" }] };
+          return { content: [{ text: `OK evidence for ${name}` }] };
+        },
+      }),
+    } as unknown as IAgentRuntime;
+  }
+
+  it("classifies each skill as ok / error / empty", async () => {
+    const out = await probeSkillBundle(probeRuntime(), [
+      "skill_ok",
+      "skill_err",
+      "skill_empty",
+    ]);
+    const byName = Object.fromEntries(out.map((r) => [r.skill, r.status]));
+    expect(byName["skill_ok"]).toBe("ok");
+    expect(byName["skill_err"]).toBe("error");
+    expect(byName["skill_empty"]).toBe("empty");
+    expect(out.every((r) => typeof r.ms === "number")).toBe(true);
+  });
+
+  it("respects opts.limit (caps how many jobs are probed)", async () => {
+    const out = await probeSkillBundle(
+      probeRuntime(),
+      ["a", "b", "c", "d", "e"],
+      {},
+      { limit: 2 },
+    );
+    expect(out.length).toBe(2);
+  });
+
+  it("runs regardless of CMC_SKILLS_ENABLED (explicit debug action, no gate)", async () => {
+    const saved = process.env.CMC_SKILLS_ENABLED;
+    delete process.env.CMC_SKILLS_ENABLED;
+    const out = await probeSkillBundle(probeRuntime(), ["skill_ok"]);
+    expect(out[0]?.status).toBe("ok");
+    if (saved === undefined) delete process.env.CMC_SKILLS_ENABLED;
+    else process.env.CMC_SKILLS_ENABLED = saved;
+  });
+
+  it("returns [] and reports MCP unavailable when no MCP service", async () => {
+    const noMcp = { getService: () => null } as unknown as IAgentRuntime;
+    expect(await probeSkillBundle(noMcp, ["skill_ok"])).toEqual([]);
+    expect(mcpAvailable(noMcp)).toBe(false);
+  });
+});
+
+describe("extractSkillSummary", () => {
+  it("pulls the summary out of a real double-encoded CMC payload", () => {
+    // The shape CMC returns: {result:{output:"<json string with nested data.summary>"}}.
+    const payload = JSON.stringify({
+      result: {
+        error: "",
+        exitCode: 0,
+        output: JSON.stringify({
+          skill: "review_mean_reversion_setup",
+          result: {
+            type: "evidence_pack",
+            data: { summary: "ON 4h mean-reversion state is stretched_but_not_exhausted." },
+          },
+        }),
+      },
+    });
+    expect(extractSkillSummary(payload)).toBe(
+      "ON 4h mean-reversion state is stretched_but_not_exhausted.",
+    );
+  });
+
+  it("falls back to `conclusion` for skills with no `summary` (e.g. breakout scanner)", () => {
+    const payload = JSON.stringify({
+      result: {
+        ok: true,
+        data: {
+          type: "evidence_pack",
+          skill_id: "altcoin_breakout_scanner_spot",
+          data: {
+            status: "ok",
+            decision_report: {
+              title: "Spot Breakout Candidate Scan",
+              conclusion: "SUP leads the breakout scan on technical strength.",
+              analysis: "### Scan Overview\nlong markdown that should NOT be picked…",
+            },
+          },
+        },
+      },
+    });
+    expect(extractSkillSummary(payload)).toBe(
+      "SUP leads the breakout scan on technical strength.",
+    );
+  });
+
+  it("returns undefined when there is no summary/conclusion/decision field", () => {
+    expect(
+      extractSkillSummary('{"result":{"data":{"status":"ok"}}}'),
+    ).toBeUndefined();
+    expect(extractSkillSummary("not json at all")).toBeUndefined();
+  });
+});
+
+describe("SKILL_BUNDLES registry", () => {
+  it("covers every feature bundle with a valid env key and non-empty defaults", () => {
+    const features = SKILL_BUNDLES.map((b) => b.feature);
+    expect(features).toContain("Overall market");
+    expect(features).toContain("Crypto research");
+    expect(features).toContain("Forecast ETF leg");
+    for (const b of SKILL_BUNDLES) {
+      expect(b.envKey).toMatch(/^[A-Z][A-Z0-9_]+$/);
+      expect(b.defaults.length).toBeGreaterThan(0);
+    }
+  });
+});
+
 describe("default skill bundles", () => {
   it("have the expected per-feature sizes and no duplicates", () => {
     const lists: Array<[string, string[], number]> = [
-      ["MARKET", DEFAULT_MARKET_SKILLS, 29],
+      ["MARKET", DEFAULT_MARKET_SKILLS, 24],
       ["TRENDING", DEFAULT_TRENDING_SKILLS, 23],
       ["RESEARCH", DEFAULT_RESEARCH_SKILLS, 36],
       ["PORTFOLIO", DEFAULT_PORTFOLIO_SKILLS, 7],

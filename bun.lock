@@ -9,7 +9,7 @@
         "@elizaos/client": "1.7.2",
         "@elizaos/core": "1.7.2",
         "@elizaos/plugin-bootstrap": "1.7.2",
-        "@elizaos/plugin-mcp": "^1.8.2",
+        "@elizaos/plugin-mcp": "^1.7.1",
         "@elizaos/plugin-ollama": "^1.2.4",
         "@elizaos/plugin-openrouter": "^1.5.17",
         "@elizaos/plugin-sql": "1.7.2",
@@ -31,6 +31,9 @@
         "vite": "^7.2.6",
       },
     },
+  },
+  "overrides": {
+    "@elizaos/plugin-mcp": "1.7.1",
   },
   "packages": {
     "3d-force-graph": ["3d-force-graph@1.80.0", "", { "dependencies": { "accessor-fn": "1", "kapsule": "^1.16", "three": ">=0.179 <1", "three-forcegraph": "1", "three-render-objects": "^1.41" } }, "sha512-tzI353gW1nXPpnC7VTa3JjMg+3cp77qOLUFO0vucPTfF+q5R6sQsNsIqVTbRIb7RSypn14nBa4yfkOe9ThxASw=="],
@@ -119,7 +122,7 @@
 
     "@elizaos/plugin-bootstrap": ["@elizaos/plugin-bootstrap@1.7.2", "", { "dependencies": { "@elizaos/core": "1.7.2", "@elizaos/plugin-sql": "1.7.2", "bun": "^1.3.4" }, "peerDependencies": { "whatwg-url": "7.1.0" } }, "sha512-1NDnGmTXsCaGknyT+sYagEPyHPug4HIJl0XKmoh446mk5EKL9VFHAi4tnBkIVSoLWYKuXdAew/p8jwRTPlPeXw=="],
 
-    "@elizaos/plugin-mcp": ["@elizaos/plugin-mcp@1.8.2", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.7.0" }, "peerDependencies": { "@elizaos/core": "*" } }, "sha512-TWjxTTqWVWmv3kOTp1h2/SiQ6SRgwLKck7w/NoCWw1mCmiHTC8UUkHanikz1AeBDKunhC+c59+uJrdGOGmTxgg=="],
+    "@elizaos/plugin-mcp": ["@elizaos/plugin-mcp@1.7.1", "", { "dependencies": { "@elizaos/core": "^1.7.0", "@modelcontextprotocol/sdk": "^1.7.0", "ajv": "^8.17.1", "json5": "^2.2.3" } }, "sha512-0onj8wnJN9ulTeAfFnHn6aZizM7W1F4unt9glt4qUvEc1SpfSonqffQsl2NCOcgtuCS5mT+FA22jok15Mddk6w=="],
 
     "@elizaos/plugin-ollama": ["@elizaos/plugin-ollama@1.2.4", "", { "dependencies": { "@ai-sdk/ui-utils": "^1.2.8", "@elizaos/core": "^1.0.0", "ai": "^4.3.9", "js-tiktoken": "^1.0.18", "ollama-ai-provider": "^1.2.0", "tsup": "8.4.0" } }, "sha512-UYarYfp8ebA4O+/BQtXWwcpLB5J+t4ThW0xdOcvfze5ZNOU51WMprG5EV8SafbhC/qj2sVFba85IdM+t5C5FEw=="],
 

@@ -37,10 +37,11 @@ const dirArrow = (d: string): string =>
   d === "up" ? "▲" : d === "down" ? "▼" : "—";
 const dirVal = (d: string): number => (d === "up" ? 1 : d === "down" ? -1 : 0);
 
-function assetLine(f: PriceForecast): string {
+/** Compact one-liner per major — a light pointer, not the focus of the read. */
+function majorLine(f: PriceForecast): string {
   const p = f.prediction;
   const chg = `${p.priceChange >= 0 ? "+" : ""}${p.priceChange.toFixed(1)}%`;
-  return `  • ${f.asset}: ${dirArrow(p.direction)} ${p.direction.toUpperCase()} ${(p.confidence * 100).toFixed(0)}% → $${p.targetPrice.toLocaleString()} (${chg})`;
+  return `${f.asset} ${dirArrow(p.direction)} ${(p.confidence * 100).toFixed(0)}% $${p.targetPrice.toLocaleString()} (${chg})`;
 }
 
 /**
@@ -94,7 +95,7 @@ export const marketForecastAction: Action = {
         "MARKET_FORECAST: generating overall market forecast",
       );
 
-      // Per-asset options forecasts (fast 6 sources, no slow options-positioning) +
+      // Per-asset options forecasts (fast free sources, no slow options-positioning) +
       // CMC market data, all in parallel.
       const cmc = (() => {
         try {
@@ -127,16 +128,42 @@ export const marketForecastAction: Action = {
           ? cmc.getTechnicals("BTC").catch(() => undefined)
           : Promise.resolve(undefined),
       ]);
-      const forecasts = await Promise.all(
+      // Per-asset forecasts run independently — one asset's transient failure (a
+      // network blip on its LLM/data call) must NOT sink the whole market read.
+      const settled = await Promise.allSettled(
         ASSETS.map((a, i) => generateForecast(a, timeframe, optCtx[i])),
       );
-      const byAsset: Record<Asset, PriceForecast> = {
-        BTC: forecasts[0],
-        ETH: forecasts[1],
-        BNB: forecasts[2],
-      };
+      const forecasts = settled
+        .filter(
+          (r): r is PromiseFulfilledResult<PriceForecast> =>
+            r.status === "fulfilled",
+        )
+        .map((r) => r.value);
+      const failedAssets = ASSETS.filter(
+        (_, i) => settled[i].status === "rejected",
+      );
+      if (forecasts.length === 0) {
+        const reasons = settled
+          .map((r) =>
+            r.status === "rejected" ? String(r.reason?.message ?? r.reason) : "",
+          )
+          .filter(Boolean)
+          .join("; ");
+        throw new Error(`all per-asset forecasts failed: ${reasons}`);
+      }
+      if (failedAssets.length)
+        logger.warn(
+          { failedAssets },
+          "MARKET_FORECAST: some assets failed; degrading to the rest",
+        );
+      const byAsset: Partial<Record<Asset, PriceForecast>> = Object.fromEntries(
+        forecasts.map((f) => [f.asset, f]),
+      );
 
-      // Options leg (30%): weighted BTC/ETH/BNB directional score in -1..1.
+      // Options leg (30%): weighted directional score in -1..1. Renormalize by the
+      // weight that actually resolved so a missing asset doesn't deflate the blend
+      // (identical to the old math when all three succeed — weights sum to 1).
+      const totalWeight = forecasts.reduce((s, f) => s + WEIGHTS[f.asset], 0);
       let optScore = 0;
       let confidence = 0;
       for (const f of forecasts) {
@@ -145,6 +172,10 @@ export const marketForecastAction: Action = {
           f.prediction.confidence *
           WEIGHTS[f.asset];
         confidence += f.prediction.confidence * WEIGHTS[f.asset];
+      }
+      if (totalWeight > 0) {
+        optScore /= totalWeight;
+        confidence /= totalWeight;
       }
 
       // CMC market-sentiment leg (70%): Fear & Greed + total-cap 24h change → -1..1.
@@ -185,16 +216,12 @@ export const marketForecastAction: Action = {
       const overallArrow =
         overall === "BULLISH" ? "▲" : overall === "BEARISH" ? "▼" : "—";
       const scoreOut = Math.round(blended * 100);
-      const weightNote =
-        cmcScore !== undefined
-          ? "CMC market 70% + options 30%"
-          : "options 100% (CMC unavailable)";
 
+      // The blend weights (CMC market 70% / options 30%, BTC/ETH/BNB split) are an
+      // internal methodology detail — keep them OUT of the user-facing text.
       let responseText =
-        `Overall crypto market — ${TF_LABEL[timeframe]} — ${overallArrow} ${overall} (score ${scoreOut >= 0 ? "+" : ""}${scoreOut} · ${weightNote})\n` +
-        `• Conviction: ${(confidence * 100).toFixed(0)}%\n` +
-        `• Options leg (30%, weighted BTC 50% / ETH 30% / BNB 20%):\n` +
-        `${ASSETS.map((a) => assetLine(byAsset[a])).join("\n")}`;
+        `Overall crypto market — ${TF_LABEL[timeframe]} — ${overallArrow} ${overall} (score ${scoreOut >= 0 ? "+" : ""}${scoreOut})\n` +
+        `• Conviction: ${(confidence * 100).toFixed(0)}%`;
 
       const status: string[] = [];
       if (g) {
@@ -220,7 +247,15 @@ export const marketForecastAction: Action = {
         );
       }
       if (status.length)
-        responseText += `\n• CMC market leg (70%):\n${status.join("\n")}`;
+        responseText += `\n• Market internals:\n${status.join("\n")}`;
+      // Light pointer to the majors — single compact line so the read stays
+      // market-wide rather than turning into a BTC/ETH/BNB rundown.
+      const availMajors = ASSETS.filter((a) => byAsset[a]).map((a) =>
+        majorLine(byAsset[a] as PriceForecast),
+      );
+      responseText += `\n• Majors: ${availMajors.join(" · ")}`;
+      if (failedAssets.length)
+        responseText += `\n• Note: ${failedAssets.join(", ")} forecast unavailable (transient data/LLM error) — read uses the rest.`;
       if (news.length)
         responseText += `\n• Latest news (CMC):\n${news.map((n) => `  • ${n.title}`).join("\n")}`;
 
@@ -228,7 +263,15 @@ export const marketForecastAction: Action = {
       const skillCtx = await runSkillBundle(
         runtime,
         skillList("MARKET_SKILLS", DEFAULT_MARKET_SKILLS),
-        {},
+        { preview: true, lookback_days: 30 },
+        {
+          // Per-symbol skills run across the majors; ETF-flow comparison defaults
+          // to BTC/ETH — so the overall read still covers the headline assets.
+          symbols: ASSETS,
+          perSkillParams: {
+            compare_etf_flow_quality: { assets: ["BTC", "ETH"] },
+          },
+        },
       );
       if (skillCtx) responseText += `\n\n${skillCtx}`;
 

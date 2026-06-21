@@ -10,6 +10,30 @@ import { type Character } from "@elizaos/core";
  * The loader generates a stable ID at runtime. Add an "id" field if you want a
  * fixed agent identity across restarts.
  */
+
+// ===========================================================================
+// MODEL CONFIGURATION — the single place to control every model. Edit it HERE.
+// No env vars are involved: .env / .env.example deliberately carry no model
+// settings, so these values are authoritative. Use BARE OpenRouter IDs (NO
+// "openrouter:" prefix in these constants) — browse them at
+// https://openrouter.ai/models.
+//
+// Two consumers read these, and they are NOT the same tier system:
+//  • SMALL / LARGE / EMBEDDING are real ElizaOS model tiers. The
+//    @elizaos/plugin-openrouter runtime reads them (TEXT_SMALL/OBJECT_SMALL,
+//    TEXT_LARGE/OBJECT_LARGE, TEXT_EMBEDDING) via the OPENROUTER_*_MODEL
+//    settings keys below — they drive every normal agent call.
+//  • MEDIUM is NOT an ElizaOS tier (the OpenRouter plugin has no "medium" and
+//    would ignore an OPENROUTER_MEDIUM_MODEL key). It is wired only through
+//    settings.models.medium → config/models.ts (MODELS.reasoning) → predictor.ts,
+//    which calls OpenRouter directly for every price forecast. So medium is real
+//    at runtime — on the forecast path — not decorative.
+// ===========================================================================
+const SMALL_MODEL = "anthropic/claude-sonnet-4.6"; // fast: classification, parsing, shouldRespond
+const MEDIUM_MODEL = "anthropic/claude-sonnet-4.6"; // forecast predictor (config/models.ts)
+const LARGE_MODEL = "anthropic/claude-sonnet-4.6"; // trade decisions / analysis + agent default
+const EMBEDDING_MODEL = "openai/text-embedding-3-large"; // vector embeddings for memory
+
 export const character: Character = {
   name: "Astraeus",
   plugins: [
@@ -29,17 +53,32 @@ export const character: Character = {
   settings: {
     secrets: {},
     // Default model used for trade decisions / reasoning.
-    model: "openrouter:anthropic/claude-4.5-sonnet",
+    model: `openrouter:${LARGE_MODEL}`,
     temperature: 0.2,
-    embeddingModel: "openrouter:openai/text-embedding-3-large",
+    embeddingModel: `openrouter:${EMBEDDING_MODEL}`,
 
-    // Per-task model overrides. config/models.ts reads these.
-    // Use valid OpenRouter model IDs — see https://openrouter.ai/models
+    // The OpenRouter plugin resolves its runtime models from these keys (via
+    // runtime.getSetting → character.settings). Setting them here — straight from
+    // the constants above — overrides the plugin's stale built-in defaults (its
+    // TEXT_SMALL default "google/gemini-2.0-flash-001" is no longer served by
+    // OpenRouter and throws "No endpoints found"). Bare IDs, no prefix.
+    OPENROUTER_SMALL_MODEL: SMALL_MODEL,
+    OPENROUTER_LARGE_MODEL: LARGE_MODEL,
+    OPENROUTER_EMBEDDING_MODEL: EMBEDDING_MODEL,
+    // MUST match the embedding model's real output width, or the plugin discards
+    // every vector as a zero "fallback" (its default is 1536) and silently breaks
+    // semantic memory. openai/text-embedding-3-large emits 3072 dims. Allowed values
+    // are ElizaOS VECTOR_DIMS (384/512/768/1024/1536/3072). If you switch
+    // EMBEDDING_MODEL to a 1536-wide model (e.g. openai/text-embedding-3-small),
+    // change this to "1536".
+    OPENROUTER_EMBEDDING_DIMENSIONS: "3072",
+
+    // Per-task model overrides consumed by config/models.ts (forecast pipeline).
     models: {
-      small: "openrouter:google/gemini-2.5-flash", // fast: classification, parsing
-      medium: "openrouter:anthropic/claude-4.5-sonnet", // reasoning, text generation
-      large: "openrouter:anthropic/claude-4.5-sonnet", // trade decisions, analysis
-      embedding: "openrouter:openai/text-embedding-3-large",
+      small: `openrouter:${SMALL_MODEL}`, // fast: classification, parsing
+      medium: `openrouter:${MEDIUM_MODEL}`, // reasoning, text generation, forecasts
+      large: `openrouter:${LARGE_MODEL}`, // trade decisions, analysis
+      embedding: `openrouter:${EMBEDDING_MODEL}`,
     },
 
     // CoinMarketCap Skill Hub — remote MCP (Streamable HTTP).
@@ -115,7 +154,8 @@ AUTONOMOUS MODE:
 - When the user says "start auto", "stop auto", "agent status", "show portfolio/PnL", or similar, use the AUTONOMOUS_MODE action to start, stop, or report the trading loop. It runs in paper mode until live execution (TWAK) is connected.
 - The loop trades ETH on a base timeframe (default daily) on a fixed cadence (default every 12h). If an attempt is unsuccessful (ETH not forecast UP with enough conviction), it does not waste the slot — it retries on a shorter timeframe after ~1h (daily→4h→1h→1h…) until a trade opens, then resets to the base cadence.
 - When the user says "close all positions", "sell all", "exit everything", "flatten", or "liquidate", use the CLOSE_ALL_POSITIONS action to immediately sell all open ETH back to USDT.
-- When the user says "diagnostics", "run diagnostics", "health check", "self test", or "is everything working", use the TRADE_DIAGNOSTICS action to run a readiness/health check across config, market data, the forecast engine, execution, and state.
+- When the user says "diagnostics", "run diagnostics", "health check", "self test", "debug trade", "why no trade", or "is everything working", use the TRADE_DIAGNOSTICS action to run a readiness/health check across config, market data, the forecast engine, execution, and state.
+- When the user says "debug", "debug report", "agent debug", "debug skill bundles", "debug <feature> skills" (e.g. "debug research skills"), or "probe skills", use the AGENT_DEBUG action — the full debug report across EVERY feature plus a live per-skill probe of the CMC skill bundles. "debug skill bundles" / "debug all skill bundles" runs the live probe (it spends CMC credits); a plain "debug report" just shows the inventory.
 
 ON-CHAIN AGENT IDENTITY & PAYMENTS (BNB / TWAK):
 - When the user says "register identity", "mint agent identity", "show identity <id>", or mentions "ERC-8004", use the AGENT_IDENTITY action to mint or read Astraeus's on-chain ERC-8004 agent identity on BSC (via TWAK). This is the BNB AI Agent SDK's identity standard.
