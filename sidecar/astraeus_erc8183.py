@@ -23,6 +23,27 @@ from pathlib import Path
 
 from bnbagent.erc8183.server import create_erc8183_app
 
+
+def _load_env(path: Path) -> None:
+    """Load sidecar/.env into os.environ so `uvicorn astraeus_erc8183:app` works.
+
+    The SDK reads real environment variables (os.environ), not the .env file, so
+    without this WALLET_PASSWORD et al. are never seen. Existing env vars win, so a
+    value set in the shell still overrides the file.
+    """
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+# Must run before the SDK reads config below (and before FORECAST_FILE).
+_load_env(Path(__file__).resolve().parent / ".env")
+
 # Shared file the Node trading agent writes after every forecast (read-only here).
 FORECAST_FILE = Path(
     os.getenv("ASTRAEUS_FORECAST_FILE", str(Path(__file__).resolve().parent.parent / "data" / "latest-forecast.json"))

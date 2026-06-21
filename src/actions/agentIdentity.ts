@@ -125,11 +125,17 @@ export const agentIdentityAction: Action = {
           values: { error: r.error },
         };
       }
+      // A defaulted data: URI is a long inline blob — show it compactly.
+      const uriLabel = r.uri
+        ? r.uri.startsWith("data:")
+          ? "inline data: registration doc"
+          : r.uri
+        : "";
       const txt =
         `🪪 ERC-8004 identity minted on BSC` +
         (r.agentId ? `\n• Agent ID: ${r.agentId}` : "") +
         (r.txHash ? `\n• Tx: ${r.txHash}` : "") +
-        (r.uri ? `\n• URI: ${r.uri}` : "");
+        (uriLabel ? `\n• URI: ${uriLabel}` : "");
       await callback?.({ text: txt, actions: ["AGENT_IDENTITY"] });
       logger.info(
         { agentId: r.agentId, txHash: r.txHash },

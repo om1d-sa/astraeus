@@ -29,12 +29,23 @@ function readAgentId(obj: Record<string, unknown>): string | undefined {
   return n !== undefined ? String(n) : undefined;
 }
 
+/**
+ * TWAK's `erc8004 register` REQUIRES an --uri (the ERC-8004 agentURI), even though
+ * its --help lists it as optional. When the caller doesn't supply one, mint a
+ * self-contained `data:` inline registration document from the metadata so
+ * "register my identity" works with no external hosting — stays self-custody.
+ */
+function defaultAgentUri(metadata: Record<string, string> = {}): string {
+  const doc = { name: "Astraeus", ...metadata };
+  return `data:application/json,${encodeURIComponent(JSON.stringify(doc))}`;
+}
+
 /** Mint Astraeus's ERC-8004 identity on BSC. On-chain tx — needs BNB for gas. */
 export async function registerIdentity(
   opts: { uri?: string; metadata?: Record<string, string> } = {},
 ): Promise<IdentityResult> {
-  const args = ["erc8004", "register", "--chain", CHAIN, "--json"];
-  if (opts.uri) args.push("--uri", opts.uri);
+  const uri = opts.uri ?? defaultAgentUri(opts.metadata);
+  const args = ["erc8004", "register", "--chain", CHAIN, "--uri", uri, "--json"];
   for (const [k, v] of Object.entries(opts.metadata ?? {})) {
     args.push("--metadata", `${k}=${v}`);
   }
@@ -51,7 +62,7 @@ export async function registerIdentity(
       raw,
     };
   }
-  return { ok: true, agentId, txHash, uri: opts.uri, metadata: opts.metadata };
+  return { ok: true, agentId, txHash, uri, metadata: opts.metadata };
 }
 
 /** Read on-chain state of an existing ERC-8004 identity. */
