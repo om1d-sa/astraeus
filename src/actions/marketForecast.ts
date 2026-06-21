@@ -19,6 +19,7 @@ import { fetchCmcOptionsEnrichment } from "../skills/options-forecast/enrich";
 import {
   runSkillBundle,
   skillList,
+  synthesizeSkillSentiment,
   DEFAULT_MARKET_SKILLS,
 } from "../skills/options-forecast/skill-bundle";
 
@@ -208,9 +209,36 @@ export const marketForecastAction: Action = {
         ? cmcSignals.reduce((a, b) => a + b, 0) / cmcSignals.length
         : undefined;
 
-      // Blend: CMC market 70% + options 30% (fall back to options-only if CMC is down).
-      const blended =
+      // Base blend: CMC market 70% + options 30% (fall back to options-only if CMC down).
+      const baseBlended =
         cmcScore !== undefined ? 0.7 * cmcScore + 0.3 * optScore : optScore;
+
+      // CMC skill bundle (off unless CMC_SKILLS_ENABLED) → the LLM distills it into a
+      // directional sentiment that ACTUALLY moves the score, weighted MARKET_SKILL_WEIGHT
+      // (default 20%, capped 50%). If skills are off or synthesis fails, the base read stands.
+      const skillCtx = await runSkillBundle(
+        runtime,
+        skillList("MARKET_SKILLS", DEFAULT_MARKET_SKILLS),
+        { preview: true, lookback_days: 30 },
+        {
+          // Per-symbol skills run across the majors; ETF-flow comparison defaults to BTC/ETH.
+          symbols: ASSETS,
+          perSkillParams: { compare_etf_flow_quality: { assets: ["BTC", "ETH"] } },
+        },
+      );
+      const synth = skillCtx
+        ? await synthesizeSkillSentiment(
+            runtime,
+            skillCtx,
+            "the overall crypto market",
+          )
+        : undefined;
+      const wEnv = Number(process.env.MARKET_SKILL_WEIGHT);
+      const skillW = synth
+        ? Math.max(0, Math.min(0.5, Number.isFinite(wEnv) ? wEnv : 0.2))
+        : 0;
+      const blended =
+        (1 - skillW) * baseBlended + skillW * (synth?.sentiment ?? 0);
       const overall =
         blended > 0.12 ? "BULLISH" : blended < -0.12 ? "BEARISH" : "NEUTRAL";
       const overallArrow =
@@ -259,21 +287,11 @@ export const marketForecastAction: Action = {
       if (news.length)
         responseText += `\n• Latest news (CMC):\n${news.map((n) => `  • ${n.title}`).join("\n")}`;
 
-      // Optional CMC skill bundle (qualitative analyses) — off unless CMC_SKILLS_ENABLED=true.
-      const skillCtx = await runSkillBundle(
-        runtime,
-        skillList("MARKET_SKILLS", DEFAULT_MARKET_SKILLS),
-        { preview: true, lookback_days: 30 },
-        {
-          // Per-symbol skills run across the majors; ETF-flow comparison defaults
-          // to BTC/ETH — so the overall read still covers the headline assets.
-          symbols: ASSETS,
-          perSkillParams: {
-            compare_etf_flow_quality: { assets: ["BTC", "ETH"] },
-          },
-        },
-      );
-      if (skillCtx) responseText += `\n\n${skillCtx}`;
+      // CMC skill read — the LLM-synthesized signal that MOVED the score above (not a raw
+      // dump). Falls back to the raw bundle only if synthesis failed.
+      if (synth)
+        responseText += `\n• CMC skill read (${synth.sentiment >= 0 ? "+" : ""}${synth.sentiment.toFixed(2)}, ${Math.round(skillW * 100)}% weight): ${synth.summary}`;
+      else if (skillCtx) responseText += `\n\n${skillCtx}`;
 
       await callback?.({ text: responseText, actions: ["MARKET_FORECAST"] });
       return {

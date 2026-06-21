@@ -11,6 +11,7 @@ import { CmcDataProvider } from "../data/cmc";
 import {
   runSkillBundle,
   skillList,
+  synthesizeSkillSentiment,
   DEFAULT_RESEARCH_SKILLS,
 } from "../skills/options-forecast/skill-bundle";
 
@@ -135,13 +136,21 @@ export const researchAction: Action = {
       }
       if (news.length)
         lines.push(`• News:\n${news.map((n) => `   • ${n.title}`).join("\n")}`);
-      // Optional CMC skill bundle (off unless CMC_SKILLS_ENABLED=true).
+      // Optional CMC skill bundle (off unless CMC_SKILLS_ENABLED=true) → the LLM distills
+      // it into a single verdict instead of a raw dump. Falls back to raw if synthesis fails.
       const skillCtx = await runSkillBundle(
         runtime,
         skillList("RESEARCH_SKILLS", DEFAULT_RESEARCH_SKILLS),
         { symbol },
       );
-      if (skillCtx) lines.push(`\n${skillCtx}`);
+      if (skillCtx) {
+        const synth = await synthesizeSkillSentiment(runtime, skillCtx, symbol);
+        lines.push(
+          synth
+            ? `\n• CMC skill read (${synth.sentiment >= 0 ? "+" : ""}${synth.sentiment.toFixed(2)}): ${synth.summary}`
+            : `\n${skillCtx}`,
+        );
+      }
       const text = lines.join("\n");
       await callback?.({ text, actions: ["RESEARCH"] });
       return {

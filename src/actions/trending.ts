@@ -11,6 +11,7 @@ import { CmcDataProvider } from "../data/cmc";
 import {
   runSkillBundle,
   skillList,
+  synthesizeSkillSentiment,
   DEFAULT_TRENDING_SKILLS,
 } from "../skills/options-forecast/skill-bundle";
 
@@ -64,13 +65,23 @@ export const trendingAction: Action = {
         return `  ${i + 1}. ${t.symbol} — ${t.name}${px}${chg}`;
       });
       let text = `🔥 Trending on CoinMarketCap:\n${lines.join("\n")}`;
-      // Optional CMC skill bundle (off unless CMC_SKILLS_ENABLED=true).
+      // Optional CMC skill bundle (off unless CMC_SKILLS_ENABLED=true) → the LLM distills
+      // it into one takeaway instead of a raw dump. Falls back to raw if synthesis fails.
       const skillCtx = await runSkillBundle(
         runtime,
         skillList("TRENDING_SKILLS", DEFAULT_TRENDING_SKILLS),
         { preview: true },
       );
-      if (skillCtx) text += `\n\n${skillCtx}`;
+      if (skillCtx) {
+        const synth = await synthesizeSkillSentiment(
+          runtime,
+          skillCtx,
+          "trending crypto tokens",
+        );
+        text += synth
+          ? `\n\n📊 CMC skill read (${synth.sentiment >= 0 ? "+" : ""}${synth.sentiment.toFixed(2)}): ${synth.summary}`
+          : `\n\n${skillCtx}`;
+      }
       await callback?.({ text, actions: ["TRENDING"] });
       return {
         text: `trending: ${items.length}`,

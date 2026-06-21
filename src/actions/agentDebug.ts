@@ -204,7 +204,15 @@ export const agentDebugAction: Action = {
         `${idOn ? "✅" : "•"} AGENT_IDENTITY command: ${idOn ? "enabled" : "disabled (ERC8004_IDENTITY_ENABLED=false)"}`,
       );
 
-      const report = lines.join("\n");
+      // Cap the report so the message bus can always persist it — a very large reply
+      // (e.g. a full live probe) can fail the central_messages insert and never render.
+      // The complete report is always in the backend log regardless.
+      const MAX = 3500;
+      const full = lines.join("\n");
+      const report =
+        full.length > MAX
+          ? `${full.slice(0, MAX)}\n…(truncated — see the terminal log for the full report)`
+          : full;
       await callback?.({ text: report, actions: ["AGENT_DEBUG"] });
       return {
         text: "agent debug report",

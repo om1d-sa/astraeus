@@ -12,6 +12,7 @@ import {
   runSkillBundle,
   probeSkillBundle,
   extractSkillSummary,
+  synthesizeSkillSentiment,
   mcpAvailable,
   SKILL_BUNDLES,
   DEFAULT_MARKET_SKILLS,
@@ -338,6 +339,45 @@ describe("extractSkillSummary", () => {
       extractSkillSummary('{"result":{"data":{"status":"ok"}}}'),
     ).toBeUndefined();
     expect(extractSkillSummary("not json at all")).toBeUndefined();
+  });
+});
+
+describe("synthesizeSkillSentiment (skills feed the score)", () => {
+  const rtWith = (modelOut: unknown): IAgentRuntime =>
+    ({ useModel: async () => modelOut }) as unknown as IAgentRuntime;
+
+  it("parses the LLM JSON into a sentiment + summary", async () => {
+    const rt = rtWith(
+      '{"sentiment": 0.7, "summary": "Funding cooling, ETF inflows resuming."}',
+    );
+    const out = await synthesizeSkillSentiment(rt, "CMC SKILL ANALYSES:\n• x", "ETH");
+    expect(out?.sentiment).toBeCloseTo(0.7, 6);
+    expect(out?.summary).toBe("Funding cooling, ETF inflows resuming.");
+  });
+
+  it("clamps out-of-range sentiment to [-1, 1]", async () => {
+    expect(
+      (await synthesizeSkillSentiment(rtWith('{"sentiment": 5, "summary": "x"}'), "x"))
+        ?.sentiment,
+    ).toBe(1);
+    expect(
+      (await synthesizeSkillSentiment(rtWith('{"sentiment": -9, "summary": "x"}'), "x"))
+        ?.sentiment,
+    ).toBe(-1);
+  });
+
+  it("returns undefined on empty input, bad JSON, missing summary, or a thrown model", async () => {
+    expect(await synthesizeSkillSentiment(rtWith("{}"), "")).toBeUndefined(); // empty bundle
+    expect(await synthesizeSkillSentiment(rtWith("not json"), "x")).toBeUndefined();
+    expect(
+      await synthesizeSkillSentiment(rtWith('{"sentiment": 0.3}'), "x"),
+    ).toBeUndefined(); // no summary
+    const boom = {
+      useModel: async () => {
+        throw new Error("LLM down");
+      },
+    } as unknown as IAgentRuntime;
+    expect(await synthesizeSkillSentiment(boom, "x")).toBeUndefined();
   });
 });
 

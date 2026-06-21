@@ -12,7 +12,7 @@
  * NOTE: each skill has its own input schema. The runner passes one shared `params`
  * object; skills whose required inputs aren't satisfied simply error and are skipped.
  */
-import { type IAgentRuntime, logger } from "@elizaos/core";
+import { type IAgentRuntime, logger, ModelType } from "@elizaos/core";
 import { McpService } from "@elizaos/plugin-mcp";
 
 const CMC_SERVER = "cmc-skill-hub";
@@ -126,6 +126,31 @@ const snippet = (s: string, max = 140): string =>
   s.replace(/\s+/g, " ").trim().slice(0, max);
 
 /**
+ * Short, human reason from a CMC error envelope (for the debug probe). Most failures are
+ * `INVALID_ARGUMENT` from a schema mismatch (the bundle's shared params don't fit every
+ * skill); surface just the code + the offending property so the report stays small and
+ * readable instead of dumping the full JSON.
+ */
+function errorReason(txt: string): string {
+  try {
+    const j = JSON.parse(txt) as {
+      error?: { code?: unknown; message?: unknown };
+      result?: { error?: { code?: unknown; message?: unknown } };
+    };
+    const err = j.error ?? j.result?.error;
+    const code = String(err?.code ?? "error");
+    const msg = String(err?.message ?? "");
+    const required = msg.match(/required property '([^']+)'/)?.[1];
+    if (required) return `${code}: needs '${required}'`;
+    const prop = msg.match(/property '([^']+)'/)?.[1];
+    if (prop) return `${code}: '${prop}' not accepted`;
+    return code !== "error" ? code : snippet(msg || txt, 80);
+  } catch {
+    return snippet(txt, 80);
+  }
+}
+
+/**
  * Pull a human-readable one-liner from a CMC skill payload. CMC skills return a
  * (often double-encoded) JSON envelope whose headline lives under a different key
  * per skill type — `summary` for most, `conclusion` (e.g. the breakout scanner) or
@@ -175,6 +200,49 @@ export function extractSkillSummary(raw: string): string | undefined {
     if (found) return found;
   }
   return undefined;
+}
+
+/** A skill bundle distilled into a directional signal + a short synthesis. */
+export interface SkillSynthesis {
+  /** -1 (very bearish) … +1 (very bullish). */
+  sentiment: number;
+  /** One or two sentences synthesizing the skill evidence. */
+  summary: string;
+}
+
+/**
+ * Distill a {@link runSkillBundle} text blob into a directional sentiment (-1..1) + a
+ * short synthesis, via the LLM. This lets the info commands ACT on the CMC skills —
+ * blend the sentiment into their score, or show a real verdict — instead of just dumping
+ * the raw list. Best-effort: returns undefined on any failure (empty input, bad JSON, LLM
+ * error) so the caller falls back to its base behaviour.
+ */
+export async function synthesizeSkillSentiment(
+  runtime: IAgentRuntime,
+  bundleText: string,
+  context = "the crypto market",
+): Promise<SkillSynthesis | undefined> {
+  if (!bundleText.trim()) return undefined;
+  try {
+    const prompt = `You are a crypto market analyst. Below are qualitative CoinMarketCap Skill Hub analyses for ${context}. Weigh them into ONE directional read.
+
+${bundleText}
+
+Respond with ONLY this JSON, nothing else:
+{"sentiment": <number from -1 (very bearish) to 1 (very bullish)>, "summary": "<one or two concise sentences synthesizing the key signals>"}`;
+    const raw = await runtime.useModel(ModelType.TEXT_LARGE, { prompt });
+    const m = String(raw).match(/\{[\s\S]*\}/);
+    if (!m) return undefined;
+    const parsed = JSON.parse(m[0]) as { sentiment?: unknown; summary?: unknown };
+    const s = Number(parsed.sentiment);
+    const sentiment = Number.isFinite(s) ? Math.max(-1, Math.min(1, s)) : 0;
+    const summary =
+      typeof parsed.summary === "string" ? parsed.summary.trim() : "";
+    return summary ? { sentiment, summary } : undefined;
+  } catch (e) {
+    logger.warn({ err: String(e) }, "skill synthesis failed — using base read");
+    return undefined;
+  }
 }
 
 /**
@@ -551,7 +619,7 @@ export async function probeSkillBundle(
         return {
           skill: job.label,
           status: "error",
-          detail: `error payload: ${snippet(txt)}`,
+          detail: errorReason(txt),
           ms,
         };
       return { skill: job.label, status: "ok", detail: `${txt.length} chars`, ms };
