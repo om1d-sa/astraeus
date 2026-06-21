@@ -56,8 +56,9 @@ export const liquidationAction: Action = {
       const skillCtx = await runSkillBundle(
         runtime,
         skillList("LIQUIDATION_SKILLS", DEFAULT_LIQUIDATION_SKILLS),
-        { preview: true },
-        { force: true },
+        {},
+        // force-run even when auto-enrichment is off; per-symbol skills fan across the majors.
+        { force: true, symbols: ["BTC", "ETH", "BNB"] },
       );
       const body =
         skillCtx ??

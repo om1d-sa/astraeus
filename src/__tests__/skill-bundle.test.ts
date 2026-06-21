@@ -22,6 +22,7 @@ import {
   DEFAULT_LIQUIDATION_SKILLS,
   DEFAULT_ETF_SKILLS,
 } from "../skills/options-forecast/skill-bundle";
+import { SKILL_SPECS } from "../skills/options-forecast/skill-schemas";
 
 /**
  * Skill-bundle tests — verify the SLOW CMC skill bundles run all skills in PARALLEL,
@@ -144,7 +145,7 @@ describe("runSkillBundle", () => {
     expect(returnedCount(out)).toBe(3); // skill_0 (validation) + skill_1 (exitCode 1) dropped
   });
 
-  it("fans symbol skills across opts.symbols and applies per-skill param overrides", async () => {
+  it("builds schema-exact params per skill and fans symbol skills across the universe", async () => {
     process.env.CMC_SKILLS_ENABLED = "true";
     const calls: Array<{ name: string; params: Record<string, unknown> }> = [];
     const rt = {
@@ -167,35 +168,30 @@ describe("runSkillBundle", () => {
       }),
     } as unknown as IAgentRuntime;
     const list = [
-      "detect_perp_momentum_exhaustion", // symbol skill → fanned
-      "compare_etf_flow_quality", // per-skill override
-      "daily_market_overview", // plain
+      "detect_perp_momentum_exhaustion", // symbol skill → fanned, params = {symbol}
+      "compare_etf_flow_quality", // required: assets
+      "daily_market_overview", // preview-only
+      "macro_financial_conditions", // required: lookback_days
     ];
-    const out = await runSkillBundle(
-      rt,
-      list,
-      { preview: true },
-      {
-        symbols: ["BTC", "ETH", "BNB"],
-        perSkillParams: { compare_etf_flow_quality: { assets: ["BTC", "ETH"] } },
-      },
-    );
-    expect(returnedCount(out)).toBe(5); // 3 (fanned) + 1 + 1
+    const out = await runSkillBundle(rt, list, {}, { symbols: ["BTC", "ETH", "BNB"] });
+    expect(returnedCount(out)).toBe(6); // 3 (fanned) + 1 + 1 + 1
 
-    // Symbol skill ran once per major, each carrying the shared `preview` param.
+    // Symbol skill ran once per major with ONLY its schema param — no shared-bag leakage.
     const sym = calls.filter((c) => c.name === "detect_perp_momentum_exhaustion");
     expect(sym.map((c) => c.params.symbol).sort()).toEqual(["BNB", "BTC", "ETH"]);
-    expect(sym.every((c) => c.params.preview === true)).toBe(true);
+    expect(sym.every((c) => Object.keys(c.params).length === 1)).toBe(true);
     expect(out).toContain("detect_perp_momentum_exhaustion:BTC");
 
-    // Per-skill override merged on top of the shared params.
+    // Each non-symbol skill gets EXACTLY its own schema params — nothing leaks across.
     const etf = calls.find((c) => c.name === "compare_etf_flow_quality");
     expect(etf?.params.assets).toEqual(["BTC", "ETH"]);
-    expect(etf?.params.preview).toBe(true);
+    expect(etf?.params.symbol).toBeUndefined();
 
-    // Plain skill: shared params only, never gets a symbol.
-    const plain = calls.find((c) => c.name === "daily_market_overview");
-    expect(plain?.params.symbol).toBeUndefined();
+    const overview = calls.find((c) => c.name === "daily_market_overview");
+    expect(overview?.params).toEqual({ preview: true });
+
+    const macro = calls.find((c) => c.name === "macro_financial_conditions");
+    expect(macro?.params).toEqual({ lookback_days: 30 });
   });
 
   it("is gated OFF when CMC_SKILLS_ENABLED is unset and not forced", async () => {
@@ -397,17 +393,47 @@ describe("SKILL_BUNDLES registry", () => {
 describe("default skill bundles", () => {
   it("have the expected per-feature sizes and no duplicates", () => {
     const lists: Array<[string, string[], number]> = [
-      ["MARKET", DEFAULT_MARKET_SKILLS, 24],
-      ["TRENDING", DEFAULT_TRENDING_SKILLS, 23],
-      ["RESEARCH", DEFAULT_RESEARCH_SKILLS, 36],
-      ["PORTFOLIO", DEFAULT_PORTFOLIO_SKILLS, 7],
-      ["LIQUIDATION", DEFAULT_LIQUIDATION_SKILLS, 6],
+      ["MARKET", DEFAULT_MARKET_SKILLS, 23],
+      ["TRENDING", DEFAULT_TRENDING_SKILLS, 15],
+      ["RESEARCH", DEFAULT_RESEARCH_SKILLS, 26],
+      ["PORTFOLIO", DEFAULT_PORTFOLIO_SKILLS, 4],
+      ["LIQUIDATION", DEFAULT_LIQUIDATION_SKILLS, 5],
       ["ETF", DEFAULT_ETF_SKILLS, 5],
     ];
     for (const [label, list, size] of lists) {
       expect({ [label]: list.length }).toEqual({ [label]: size });
       expect(new Set(list).size).toBe(list.length); // no dupes within a bundle
       for (const s of list) expect(s).toMatch(/^[a-z][a-z0-9_]+$/); // valid unique_names
+    }
+  });
+
+  it("every default-bundle skill has a SKILL_SPECS entry (no leaky legacy fallback)", () => {
+    const all = [
+      ...DEFAULT_MARKET_SKILLS,
+      ...DEFAULT_TRENDING_SKILLS,
+      ...DEFAULT_RESEARCH_SKILLS,
+      ...DEFAULT_PORTFOLIO_SKILLS,
+      ...DEFAULT_LIQUIDATION_SKILLS,
+      ...DEFAULT_ETF_SKILLS,
+    ];
+    const missing = all.filter((s) => !SKILL_SPECS[s]);
+    expect(missing).toEqual([]);
+  });
+
+  it("every SKILL_SPECS builder produces a plain params object", () => {
+    const ctx = {
+      symbol: "BTC",
+      symbols: ["BTC", "ETH", "BNB"],
+      holdings: [
+        { symbol: "BTC", pct: 50 },
+        { symbol: "ETH", pct: 30 },
+        { symbol: "USDT", pct: 20 },
+      ],
+    };
+    for (const [name, spec] of Object.entries(SKILL_SPECS)) {
+      const params = spec.build(ctx);
+      expect(typeof params, name).toBe("object");
+      expect(Array.isArray(params), name).toBe(false);
     }
   });
 });

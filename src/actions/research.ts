@@ -10,8 +10,10 @@ import {
 import { CmcDataProvider } from "../data/cmc";
 import {
   runSkillBundle,
+  skillsEnabled,
   skillList,
   synthesizeSkillSentiment,
+  showRawSkillBundle,
   DEFAULT_RESEARCH_SKILLS,
 } from "../skills/options-forecast/skill-bundle";
 
@@ -138,18 +140,28 @@ export const researchAction: Action = {
         lines.push(`• News:\n${news.map((n) => `   • ${n.title}`).join("\n")}`);
       // Optional CMC skill bundle (off unless CMC_SKILLS_ENABLED=true) → the LLM distills
       // it into a single verdict instead of a raw dump. Falls back to raw if synthesis fails.
+      // Resolve the token's on-chain contract (only when skills will run) so contract-scoped
+      // skills (holder/safety/structure) analyze THIS token rather than the default.
+      const contract = skillsEnabled()
+        ? await cmc.getTokenContract(symbol).catch(() => undefined)
+        : undefined;
       const skillCtx = await runSkillBundle(
         runtime,
         skillList("RESEARCH_SKILLS", DEFAULT_RESEARCH_SKILLS),
-        { symbol },
+        {
+          symbol,
+          ...(contract
+            ? { contractToken: { symbol, platform: contract.platform, contract: contract.contract } }
+            : {}),
+        },
       );
       if (skillCtx) {
         const synth = await synthesizeSkillSentiment(runtime, skillCtx, symbol);
-        lines.push(
-          synth
-            ? `\n• CMC skill read (${synth.sentiment >= 0 ? "+" : ""}${synth.sentiment.toFixed(2)}): ${synth.summary}`
-            : `\n${skillCtx}`,
-        );
+        if (synth)
+          lines.push(
+            `\n• CMC skill read (${synth.sentiment >= 0 ? "+" : ""}${synth.sentiment.toFixed(2)}): ${synth.summary}`,
+          );
+        else if (showRawSkillBundle()) lines.push(`\n${skillCtx}`);
       }
       const text = lines.join("\n");
       await callback?.({ text, actions: ["RESEARCH"] });

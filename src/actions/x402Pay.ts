@@ -21,6 +21,16 @@ function parseMaxPayment(text: string): string | undefined {
 }
 
 /**
+ * Pull a chain hint ("on base", "network bsc", "eip155:8453") from the message.
+ * Undefined falls back to requestX402's default (X402_PREFER_NETWORK / "base"),
+ * which keeps CMC's x402 calls on the 6-dp Base USDC route the wallet can afford.
+ */
+function parseNetwork(text: string): string | undefined {
+  const m = text.match(/\b(?:on|network|chain|prefer-?network)\s*[:=]?\s*(base|bsc|eip155:\d+)\b/i);
+  return m?.[1]?.toLowerCase();
+}
+
+/**
  * X402_PAY — pay-per-request to an x402-gated endpoint via TWAK (self-custody).
  *
  * "quote" previews the price (read-only); "request"/"pay" makes the call and
@@ -98,6 +108,7 @@ export const x402PayAction: Action = {
       });
       const r = await requestX402(url, {
         maxPaymentAtomic: parseMaxPayment(text),
+        preferNetwork: parseNetwork(text),
       });
       if (!r.ok) {
         await callback?.({

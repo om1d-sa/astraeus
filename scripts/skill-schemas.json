@@ -1,0 +1,5811 @@
+{
+  "schemas": {
+    "review_options_portfolio_greeks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "positions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "ticker": {
+                "type": "string",
+                "description": "Option identifier."
+              },
+              "option_type": {
+                "type": "string",
+                "description": "Call or put.",
+                "enum": [
+                  "call",
+                  "put"
+                ]
+              },
+              "quantity": {
+                "type": "number",
+                "description": "Number of contracts."
+              },
+              "contract_multiplier": {
+                "type": "number",
+                "description": "Contract multiplier.",
+                "minimum": 0
+              },
+              "delta": {
+                "type": "number",
+                "description": "Per-contract delta."
+              },
+              "gamma": {
+                "type": "number",
+                "description": "Per-contract gamma."
+              },
+              "theta": {
+                "type": "number",
+                "description": "Per-contract theta."
+              },
+              "vega": {
+                "type": "number",
+                "description": "Per-contract vega."
+              },
+              "days_to_expiry": {
+                "type": "number",
+                "description": "Days to expiry.",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "ticker",
+              "option_type",
+              "quantity",
+              "contract_multiplier",
+              "delta",
+              "gamma",
+              "theta",
+              "vega",
+              "days_to_expiry"
+            ],
+            "description": "Caller-supplied position object."
+          },
+          "description": "Caller-supplied list of position records."
+        },
+        "contract_specs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "ticker": {
+                "type": "string",
+                "description": "Option identifier."
+              },
+              "strike": {
+                "type": "number",
+                "description": "Strike price.",
+                "minimum": 0
+              },
+              "underlying_price": {
+                "type": "number",
+                "description": "Underlying price.",
+                "minimum": 0
+              },
+              "implied_vol": {
+                "type": "number",
+                "description": "Implied volatility as decimal.",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "ticker",
+              "strike",
+              "underlying_price",
+              "implied_vol"
+            ],
+            "description": "Caller-supplied contract spec object."
+          },
+          "description": "Caller-supplied list of contract spec records."
+        },
+        "pricing_inputs": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "note": {
+              "type": "string",
+              "description": "Optional note."
+            }
+          },
+          "description": "Caller-supplied pricing inputs object."
+        }
+      },
+      "required": [
+        "positions",
+        "contract_specs"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "aggregate_options_portfolio_greek_exposure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "positions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "ticker": {
+                "type": "string",
+                "description": "Option identifier."
+              },
+              "option_type": {
+                "type": "string",
+                "description": "Call or put.",
+                "enum": [
+                  "call",
+                  "put"
+                ]
+              },
+              "quantity": {
+                "type": "number",
+                "description": "Number of contracts."
+              },
+              "contract_multiplier": {
+                "type": "number",
+                "description": "Contract multiplier.",
+                "exclusiveMinimum": 0
+              },
+              "delta": {
+                "type": "number",
+                "description": "Per-contract delta."
+              },
+              "gamma": {
+                "type": "number",
+                "description": "Per-contract gamma."
+              },
+              "theta": {
+                "type": "number",
+                "description": "Per-contract theta."
+              },
+              "vega": {
+                "type": "number",
+                "description": "Per-contract vega."
+              },
+              "days_to_expiry": {
+                "type": "number",
+                "description": "Days to expiry.",
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "ticker",
+              "option_type",
+              "quantity",
+              "contract_multiplier",
+              "delta",
+              "gamma",
+              "theta",
+              "vega",
+              "days_to_expiry"
+            ],
+            "description": "Caller-supplied position object."
+          },
+          "description": "Caller-supplied list of position records."
+        },
+        "contract_specs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "ticker": {
+                "type": "string",
+                "description": "Option identifier."
+              },
+              "strike": {
+                "type": "number",
+                "description": "Strike price.",
+                "exclusiveMinimum": 0
+              },
+              "underlying_price": {
+                "type": "number",
+                "description": "Underlying price.",
+                "exclusiveMinimum": 0
+              },
+              "implied_vol": {
+                "type": "number",
+                "description": "Implied volatility as decimal.",
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "ticker",
+              "strike",
+              "underlying_price",
+              "implied_vol"
+            ],
+            "description": "Caller-supplied contract spec object."
+          },
+          "description": "Caller-supplied list of contract spec records."
+        },
+        "pricing_inputs": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "note": {
+              "type": "string",
+              "description": "Optional note."
+            }
+          },
+          "description": "Optional caller-supplied pricing context. It is summarized for context and is not used to re-price missing Greeks."
+        }
+      },
+      "required": [
+        "positions",
+        "contract_specs"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "altcoin_breakout_scanner_spot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preview": {
+          "type": "boolean",
+          "enum": [
+            true
+          ],
+          "description": "Explicit trigger for the default spot-altcoin breakout scan. Pass preview=true."
+        }
+      },
+      "required": [
+        "preview"
+      ]
+    },
+    "altcoin_scanner_perp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preview": {
+          "type": "boolean",
+          "enum": [
+            true
+          ],
+          "description": "Explicit trigger for the default perp-altcoin candidate scan. Pass preview=true."
+        }
+      },
+      "required": [
+        "preview"
+      ]
+    },
+    "perp_contract_analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cmcid": {
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string",
+              "minLength": 1
+            }
+          ],
+          "description": "Canonical asset id used to resolve the base asset symbol."
+        },
+        "slug": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Canonical asset slug used to resolve the base asset symbol."
+        },
+        "symbol": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Base asset symbol, for example BTC, ETH, or SOL."
+        },
+        "timeframe": {
+          "type": "string",
+          "enum": [
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ],
+          "default": "4h",
+          "description": "Primary analysis timeframe."
+        },
+        "exchange_list": {
+          "type": "string",
+          "default": "Binance,OKX,Bybit",
+          "description": "Comma-separated futures venues for aggregated perp CVD and orderbook context."
+        },
+        "spot_exchange_list": {
+          "type": "string",
+          "default": "Binance,OKX,Coinbase,Bybit,Gate,Bitget,Upbit",
+          "description": "Comma-separated spot venues for aggregated spot CVD confirmation."
+        },
+        "liq_range": {
+          "type": "string",
+          "enum": [
+            "12h",
+            "24h",
+            "3d",
+            "7d",
+            "30d",
+            "90d",
+            "180d",
+            "1y"
+          ],
+          "default": "3d",
+          "description": "Liquidation heatmap aggregation range."
+        },
+        "lookback_days": {
+          "type": "integer",
+          "minimum": 7,
+          "maximum": 90,
+          "default": 14,
+          "description": "Controls the primary timeframe history window within package caps; mapped higher/lower timeframe context uses package bucket defaults."
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "cmcid"
+          ]
+        },
+        {
+          "required": [
+            "slug"
+          ]
+        },
+        {
+          "required": [
+            "symbol"
+          ]
+        }
+      ]
+    },
+    "altcoin_deep_research": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cmcid": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "CMC asset id. Preferred exact identity input."
+        },
+        "slug": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Canonical asset slug."
+        },
+        "symbol": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target asset symbol."
+        },
+        "convert": {
+          "type": "string",
+          "minLength": 1,
+          "default": "USD",
+          "description": "Quote currency for live market evidence."
+        },
+        "ohlcv_timeframe": {
+          "type": "string",
+          "enum": [
+            "1h",
+            "3h",
+            "4h",
+            "6h",
+            "12h",
+            "1d",
+            "3d",
+            "7d",
+            "30d"
+          ],
+          "default": "4h",
+          "description": "Spot technical timeframe."
+        },
+        "perp_timeframe": {
+          "type": "string",
+          "enum": [
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ],
+          "default": "4h",
+          "description": "Derivatives context timeframe."
+        },
+        "lookback_days": {
+          "type": "integer",
+          "minimum": 14,
+          "maximum": 90,
+          "default": 30,
+          "description": "Historical lookback window for technical and market context."
+        },
+        "signal_window": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 30,
+          "default": 5,
+          "description": "Recent bar window used for signal context."
+        },
+        "source_a_window_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30,
+          "default": 14,
+          "description": "Recent source A lookback window."
+        },
+        "source_b_window_hours": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 168,
+          "default": 72,
+          "description": "Recent source B lookback window."
+        },
+        "evidence_pack": {
+          "type": "object",
+          "description": "Optional caller-supplied source snapshots keyed by neutral source name."
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "cmcid"
+          ]
+        },
+        {
+          "required": [
+            "slug"
+          ]
+        },
+        {
+          "required": [
+            "symbol"
+          ]
+        }
+      ]
+    },
+    "altcoin_token_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cmcid": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          ],
+          "description": "Asset id (UCID: The Unified Cryptoasset ID), preferred for exact identity resolution, for example 11419 for Toncoin."
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          ],
+          "description": "Alias for cmcid, accepted for callers that send asset id under the generic id field."
+        },
+        "slug": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Canonical asset slug such as toncoin."
+        },
+        "symbol": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target token symbol such as TON, ONDO, or RENDER."
+        },
+        "full_name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional token name used to resolve symbols that map to more than one asset."
+        },
+        "convert": {
+          "type": "string",
+          "minLength": 1,
+          "default": "USD",
+          "description": "Quote currency used for the market snapshot."
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "cmcid"
+          ]
+        },
+        {
+          "required": [
+            "id"
+          ]
+        },
+        {
+          "required": [
+            "slug"
+          ]
+        },
+        {
+          "required": [
+            "symbol"
+          ]
+        }
+      ]
+    },
+    "scan_spot_altcoin_breakout_with_social_confirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "top_n": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 5,
+          "description": "How many top-ranked breakout candidates receive the deeper narrative pass."
+        },
+        "listing_timeframe": {
+          "type": "string",
+          "enum": [
+            "1h",
+            "24h",
+            "7d",
+            "30d",
+            "60d",
+            "90d"
+          ],
+          "default": "24h",
+          "description": "Price-change window used for the broad market screen."
+        },
+        "ohlcv_timeframe": {
+          "type": "string",
+          "enum": [
+            "1h",
+            "4h",
+            "1d"
+          ],
+          "default": "4h",
+          "description": "Bar interval used for EMA, volume, MACD, and RSI confirmation."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 2000,
+          "default": 300,
+          "description": "Maximum number of listed assets to include in the first-pass market scan."
+        },
+        "convert": {
+          "type": "string",
+          "minLength": 1,
+          "default": "USD",
+          "description": "Quote currency used for price and volume comparisons."
+        },
+        "market_data": {
+          "type": "object",
+          "description": "Optional caller-provided compact listing rows used for local or pre-fetched execution without live data access."
+        }
+      },
+      "required": []
+    },
+    "screen_spot_breakout_candidates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "universe": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeframe": {
+          "type": "string"
+        },
+        "market_data": {
+          "type": "object",
+          "description": "Optional caller-provided compact listing rows used for local or pre-fetched execution without live data access."
+        }
+      },
+      "required": []
+    },
+    "btc_etf_institutional_demand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "preview"
+      ],
+      "properties": {
+        "preview": {
+          "type": "boolean",
+          "const": true,
+          "description": "Must be true. The skill exposes no user-tunable analytical parameters."
+        }
+      }
+    },
+    "analyze_btc_eth_etf_flow_impact": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "asset": {
+          "type": "string",
+          "default": "BTC",
+          "description": "Asset ticker. Business output is only supported for BTC and ETH."
+        },
+        "time_window": {
+          "type": "string",
+          "enum": [
+            "7d",
+            "30d",
+            "90d"
+          ],
+          "default": "30d",
+          "description": "Lookback window used for ETF flow aggregation and history-limit sizing."
+        }
+      },
+      "required": []
+    },
+    "detect_etf_flow_price_absorption": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "asset": {
+          "type": "string",
+          "default": "BTC",
+          "description": "Asset ticker. Current evidence lane supports BTC and ETH only."
+        },
+        "time_window": {
+          "type": "string",
+          "enum": [
+            "7d"
+          ],
+          "default": "7d",
+          "description": "Flow and price-response window. Current fast-beta staging supports the 7-session ETF window only."
+        }
+      },
+      "required": []
+    },
+    "compare_etf_flow_quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "assets": {
+          "description": "Required comparison assets. This fast-beta version supports BTC and ETH together.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "BTC",
+              "ETH"
+            ]
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true
+        },
+        "time_window": {
+          "description": "Lookback window requested for ETF flow comparison. Supported values are 7d, 30d, and 90d.",
+          "type": "string",
+          "enum": [
+            "7d",
+            "30d",
+            "90d"
+          ],
+          "default": "30d"
+        }
+      },
+      "required": [
+        "assets"
+      ]
+    },
+    "review_etf_flow_vs_perp_sentiment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string"
+        },
+        "window": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "btc_cross_asset_correlation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preview": {
+          "type": "boolean",
+          "enum": [
+            true
+          ],
+          "description": "Explicit trigger for the default BTC cross-asset preview. Public callers should pass preview=true and nothing else."
+        }
+      },
+      "required": [
+        "preview"
+      ]
+    },
+    "crypto_macro_overview": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preview": {
+          "type": "boolean",
+          "enum": [
+            true
+          ],
+          "description": "Explicit trigger for the default crypto macro preview. When the caller has no execution parameters, pass preview=true."
+        }
+      },
+      "required": [
+        "preview"
+      ]
+    },
+    "analyze_cross_asset_risk_regime": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "time_window": {
+          "type": "string",
+          "enum": [
+            "1d",
+            "7d",
+            "30d",
+            "90d"
+          ],
+          "default": "30d",
+          "description": "Requested context bucket. Cross-asset return lanes are latest-snapshot proxies when full-window returns are unavailable; derivatives positioning uses this bucket where available."
+        },
+        "fixture_evidence": {
+          "type": "object",
+          "description": "Optional local test/demo override consumed before normalization."
+        }
+      },
+      "required": []
+    },
+    "assess_volatility_expansion_risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "Asset symbol to review, such as BTC or ETH. Defaults to BTC when omitted."
+        },
+        "timeframe": {
+          "type": "string",
+          "description": "Review interval for retained market history.",
+          "enum": [
+            "1h",
+            "4h",
+            "1d"
+          ],
+          "default": "4h"
+        }
+      },
+      "required": []
+    },
+    "decode_macro_event_impact": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "type": "string",
+          "description": "Macro event keyword or family, such as cpi, inflation, rates, labor, or generic macro shock."
+        },
+        "time_window": {
+          "type": "string",
+          "description": "Lookback bucket used to evaluate market, rates, and event context; defaults to 30d when omitted."
+        }
+      },
+      "required": []
+    },
+    "build_regime_aware_allocation": {
+      "type": "object",
+      "properties": {
+        "current_allocation": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "asset": {
+                "type": "string",
+                "description": "Asset symbol."
+              },
+              "value_usd": {
+                "type": "number",
+                "description": "Value.",
+                "minimum": 0
+              },
+              "risk_bucket": {
+                "type": "string",
+                "description": "Risk bucket.",
+                "enum": [
+                  "high_beta",
+                  "core",
+                  "defensive"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "asset",
+              "value_usd",
+              "risk_bucket"
+            ],
+            "description": "Caller-supplied current allocation object."
+          },
+          "minItems": 1,
+          "description": "Caller-supplied list of current allocation records."
+        },
+        "constraints": {
+          "type": "object",
+          "properties": {
+            "max_single_asset_pct": {
+              "type": "number",
+              "description": "Max asset weight.",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": true,
+          "description": "Caller-supplied constraints object."
+        },
+        "risk_budget": {
+          "type": "object",
+          "properties": {
+            "defensive_bias": {
+              "type": "number",
+              "description": "Bias as decimal.",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": true,
+          "required": [
+            "defensive_bias"
+          ],
+          "description": "Caller-supplied risk budget object."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "current_allocation",
+        "constraints",
+        "risk_budget"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "kline_pattern_recognition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cmcid": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "CMC asset id. Preferred exact identity input."
+        },
+        "slug": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Canonical asset slug."
+        },
+        "symbol": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Base asset symbol, for example BTC, ETH, or SOL."
+        },
+        "convert": {
+          "type": "string",
+          "default": "USD",
+          "minLength": 1,
+          "description": "Quote currency for OHLCV and live quote requests."
+        },
+        "interval": {
+          "type": "string",
+          "enum": [
+            "1h",
+            "3h",
+            "4h",
+            "6h",
+            "12h",
+            "1d",
+            "3d",
+            "7d",
+            "30d"
+          ],
+          "default": "4h",
+          "description": "Primary kline interval used for the latest-window pattern analysis."
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "cmcid"
+          ]
+        },
+        {
+          "required": [
+            "slug"
+          ]
+        },
+        {
+          "required": [
+            "symbol"
+          ]
+        }
+      ]
+    },
+    "analyze_multi_timeframe_trend_alignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "token_id_or_symbol": {
+          "type": "string"
+        },
+        "timeframes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "1h",
+              "4h",
+              "1d",
+              "7d"
+            ]
+          }
+        }
+      },
+      "required": [
+        "token_id_or_symbol"
+      ]
+    },
+    "classify_kline_pattern_quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Base asset symbol, for example BTC, ETH, or SOL."
+        },
+        "convert": {
+          "type": "string",
+          "default": "USD",
+          "minLength": 1,
+          "description": "Quote currency for OHLCV and live quote requests."
+        },
+        "interval": {
+          "type": "string",
+          "enum": [
+            "1h",
+            "3h",
+            "4h",
+            "6h",
+            "12h",
+            "1d",
+            "3d",
+            "7d",
+            "30d"
+          ],
+          "default": "4h",
+          "description": "Primary kline interval used for the latest-window pattern analysis."
+        },
+        "lookback": {
+          "type": "integer",
+          "default": 240,
+          "minimum": 220,
+          "maximum": 1000,
+          "description": "Historical bar count required to support EMA200 and structure calculations."
+        },
+        "min_swing_window": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 3,
+          "maximum": 30,
+          "description": "Swing detection window used for structure and support/resistance clustering."
+        },
+        "sr_cluster_pct": {
+          "type": "number",
+          "default": 0.005,
+          "exclusiveMinimum": 0,
+          "description": "Cluster threshold for support/resistance grouping as a percentage."
+        },
+        "volume_confirm_mult": {
+          "type": "number",
+          "default": 1.2,
+          "exclusiveMinimum": 0,
+          "description": "Volume multiple required for pattern confirmation versus SMA20 volume."
+        },
+        "divergence_window": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 3,
+          "maximum": 30,
+          "description": "Swing window used for divergence matching."
+        },
+        "divergence_tolerance": {
+          "type": "integer",
+          "default": 8,
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Bar-index tolerance used when matching price and indicator swings."
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "analyze_perp_trend_structure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string"
+        },
+        "venue": {
+          "type": "string"
+        },
+        "timeframe": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "track_narrative_rotation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "time_window": {
+          "type": "string"
+        }
+      },
+      "required": []
+    },
+    "assess_token_holder_dex_flow_quality": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "request_class"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "request_class",
+            "token",
+            "holder_snapshot",
+            "dex_flows",
+            "pools"
+          ]
+        },
+        {
+          "required": [
+            "request_class",
+            "live_fetch",
+            "token"
+          ]
+        }
+      ],
+      "properties": {
+        "request_class": {
+          "type": "string",
+          "enum": [
+            "token_holder_dex_flow_monitor"
+          ],
+          "description": "Supported request class for this monitor."
+        },
+        "live_fetch": {
+          "type": "boolean",
+          "description": "Optional live public refresh flag. When true, token.address and token.platform are required. When omitted or false, the skill uses caller-supplied compact observations."
+        },
+        "token": {
+          "type": "object",
+          "description": "Token identity for the monitor. Caller-supplied mode requires symbol. Live refresh mode requires platform and public token contract address."
+        },
+        "holder_snapshot": {
+          "type": "object",
+          "description": "Compact holder metrics such as holder_count, top_10_pct, and holder_count_change_7d. Missing trend is reported as unknown and partial rather than estimated."
+        },
+        "dex_flows": {
+          "type": "array",
+          "description": "Compact DEX flow rows with window, swap_count, net_buy_usd, and volume_usd."
+        },
+        "pools": {
+          "type": "array",
+          "description": "Compact liquidity rows with pool name, liquidity_usd, and volume_24h_usd."
+        },
+        "security_flags": {
+          "type": "array",
+          "description": "Optional bounded security or control flags already safe to show to the user."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Maximum number of capped rows returned in each ranked section."
+        }
+      }
+    },
+    "token_holder_and_dex_flow_monitor": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "request_class"
+      ],
+      "properties": {
+        "request_class": {
+          "type": "string",
+          "description": "Supported request class for this monitor."
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Maximum number of capped rows returned in each ranked section."
+        }
+      }
+    },
+    "detect_oi_dark_flow_setup": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cmcid": {
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string",
+              "minLength": 1
+            }
+          ],
+          "description": "Canonical asset id used to resolve the base asset symbol."
+        },
+        "slug": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Canonical asset slug used to resolve the base asset symbol."
+        },
+        "symbol": {
+          "type": "string",
+          "default": "BTC",
+          "description": "Base asset symbol to evaluate, such as BTC or ETH."
+        },
+        "venue": {
+          "type": "string",
+          "default": "Binance",
+          "description": "Venue label used to select the perpetual market context."
+        },
+        "window": {
+          "type": "string",
+          "default": "4h",
+          "enum": [
+            "1h",
+            "4h",
+            "12h",
+            "24h"
+          ],
+          "description": "Signal window label used by the setup read."
+        },
+        "lookback_days": {
+          "type": "integer",
+          "default": 14,
+          "minimum": 2,
+          "maximum": 90,
+          "description": "Recent lookback window used to build the setup read."
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "cmcid"
+          ]
+        },
+        {
+          "required": [
+            "slug"
+          ]
+        },
+        {
+          "required": [
+            "symbol"
+          ]
+        }
+      ]
+    },
+    "analyze_open_interest_price_divergence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string"
+        },
+        "venue": {
+          "type": "string"
+        },
+        "window": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "rank_oi_dark_flow_candidates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "universe": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "BTC",
+            "ETH",
+            "SOL",
+            "LINK",
+            "SUI",
+            "AVAX",
+            "DOGE",
+            "ADA"
+          ],
+          "description": "Symbols to rank after normalization."
+        },
+        "venue": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "Binance",
+            "OKX",
+            "Bybit"
+          ],
+          "description": "Venue labels used to select aggregate perpetual context."
+        },
+        "window": {
+          "type": "string",
+          "default": "24h",
+          "enum": [
+            "1h",
+            "4h",
+            "12h",
+            "24h"
+          ],
+          "description": "Signal window label used by the ranking read."
+        },
+        "top_n": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 25,
+          "description": "Maximum number of ranked candidates to return."
+        }
+      },
+      "required": []
+    },
+    "track_exchange_inflow_outflow_pressure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string"
+        },
+        "window": {
+          "type": "string"
+        }
+      },
+      "required": []
+    },
+    "detect_funding_rate_regime_shift": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "description": "Base asset or perpetual pair to inspect, such as BTC or BTCUSDT.",
+          "type": "string",
+          "default": "BTC"
+        },
+        "venue": {
+          "description": "Derivatives venue name to inspect as the single venue lane; defaults to Binance.",
+          "type": "string",
+          "default": "Binance"
+        },
+        "window": {
+          "description": "Lookback window in Nd format, from 2d to 90d; defaults to 30d.",
+          "type": "string",
+          "default": "30d"
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "screen_perp_breakout_candidates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "universe": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "venue": {
+          "type": "string"
+        },
+        "timeframe": {
+          "type": "string"
+        }
+      },
+      "required": []
+    },
+    "detect_perp_bull_bear_divergence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string"
+        },
+        "venue": {
+          "type": "string"
+        },
+        "timeframe": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "rank_cvd_divergence_candidates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "universe": {
+          "description": "Symbols to rank, such as BTC, ETH, and SOL. Defaults to BTC, ETH, and SOL.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "BTC",
+            "ETH",
+            "SOL"
+          ]
+        },
+        "top_n": {
+          "description": "Maximum ranked candidates to return, from 1 to 20. Defaults to 5.",
+          "type": "integer",
+          "default": 5
+        }
+      },
+      "required": []
+    },
+    "assess_liquidation_cascade_risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string"
+        },
+        "market": {
+          "type": "string"
+        },
+        "window": {
+          "type": "string"
+        }
+      },
+      "required": []
+    },
+    "perp_scanner_candidates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "exchange_list": {
+          "type": "array",
+          "description": "Optional caller venue context for the desired scan universe. Current v1 output is a venue-neutral market snapshot and does not claim venue-scoped filtering unless row-level venue data is available.",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "Binance",
+            "OKX",
+            "Bybit"
+          ]
+        },
+        "top_n": {
+          "type": "integer",
+          "description": "Maximum number of retained candidates to return. Valid range is 3 to 25.",
+          "default": 10
+        },
+        "max_market_cap_usd": {
+          "type": "number",
+          "description": "Maximum market capitalization in USD for low-cap candidate eligibility. Valid range is 10,000,000 to 50,000,000,000.",
+          "default": 2000000000
+        },
+        "min_perp_volume_usd_4h": {
+          "type": "number",
+          "description": "Minimum four-hour perpetual volume in USD required for a candidate to pass the liquidity filter.",
+          "default": 1000000
+        },
+        "min_open_interest_change_pct": {
+          "type": "number",
+          "description": "Minimum four-hour open-interest change percentage. Rows must be strictly greater than this threshold; default 0 means rising open interest only. Values may be negative down to -20 and up to 100.",
+          "default": 0
+        },
+        "min_funding_rate": {
+          "type": "number",
+          "description": "Minimum average funding rate required for a candidate. Rows must be strictly greater than this threshold; default 0 means positive funding only.",
+          "default": 0
+        }
+      },
+      "required": []
+    },
+    "analyze_token_unlock_impact": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "token_id_or_symbol": {
+          "type": "string",
+          "description": "Token symbol, slug, or id to analyze, for example OP or optimism."
+        },
+        "window": {
+          "type": "string",
+          "description": "Optional forward unlock window such as 30d or 90d; defaults to the package window when omitted."
+        }
+      },
+      "required": [
+        "token_id_or_symbol"
+      ]
+    },
+    "rank_token_unlock_supply_pressure": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "request_class"
+      ],
+      "properties": {
+        "request_class": {
+          "type": "string",
+          "description": "Supported request class for this monitor."
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Maximum number of capped rows returned in each ranked section."
+        },
+        "unlocks": {
+          "type": "array",
+          "description": "Compact token unlock rows. Each row should include token, unlock_value_usd, circulating_supply_usd, and may include unlock_date, recipient_type, cliff, and recipient_concentration_pct.",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "thresholds": {
+          "type": "object",
+          "description": "Optional numeric thresholds. Supported keys include min_unlock_value_usd, large_unlock_pct_supply, and concentrated_recipient_pct.",
+          "additionalProperties": true
+        },
+        "live_fetch": {
+          "type": "boolean",
+          "description": "Optional approved public snapshot fetch. If unavailable, the result is blocked instead of estimated."
+        }
+      }
+    },
+    "assess_unlock_absorption_capacity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "token_id_or_symbol": {
+          "type": "string",
+          "description": "Token symbol or token identifier to evaluate for unlock-absorption evidence."
+        }
+      },
+      "required": [
+        "token_id_or_symbol"
+      ]
+    },
+    "token_unlock_pressure_monitor": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "request_class"
+      ],
+      "properties": {
+        "request_class": {
+          "type": "string",
+          "description": "Supported request class for this monitor."
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Maximum number of capped rows returned in each ranked section."
+        }
+      }
+    },
+    "compare_token_unlock_risk_bucket": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tokens": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Token symbols or identifiers to compare by unlock risk bucket.",
+          "default": [
+            "GT",
+            "RENDER",
+            "DODO"
+          ]
+        },
+        "horizon": {
+          "type": "string",
+          "description": "Review horizon in Nd format, such as 90d. Defaults to 90d.",
+          "default": "90d"
+        }
+      },
+      "required": [
+        "tokens"
+      ]
+    },
+    "detect_holder_distribution_trend": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "token_id_or_symbol": {
+          "description": "Token symbol or token identifier to assess, such as AAVE.",
+          "type": "string",
+          "default": "AAVE"
+        },
+        "platform": {
+          "description": "Network or platform name for the token contract, such as ethereum.",
+          "type": "string",
+          "default": "ethereum"
+        },
+        "token_address": {
+          "description": "Token contract address for the requested platform.",
+          "type": "string",
+          "default": "0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9"
+        }
+      },
+      "required": [
+        "token_id_or_symbol",
+        "platform",
+        "token_address"
+      ]
+    },
+    "portfolio_analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "holdings"
+      ],
+      "properties": {
+        "holdings": {
+          "type": "array",
+          "minItems": 1,
+          "description": "User portfolio holdings to review.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "symbol",
+              "position_value_usd",
+              "weight_pct"
+            ],
+            "properties": {
+              "symbol": {
+                "type": "string",
+                "description": "Asset symbol."
+              },
+              "position_value_usd": {
+                "type": "number",
+                "minimum": 0,
+                "description": "USD position value. Required for ranking and risk attribution."
+              },
+              "weight_pct": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100,
+                "description": "Portfolio weight percent. Required for top holding selection. Weights do not need to sum to 100."
+              },
+              "network": {
+                "type": "string",
+                "description": "Network label for onchain holdings. Required when contract_address is supplied."
+              },
+              "contract_address": {
+                "type": "string",
+                "description": "Token contract address for onchain risk review. Required when network is supplied."
+              }
+            }
+          }
+        }
+      }
+    },
+    "altcoin_official_dynamics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cmcid": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          ],
+          "description": "Asset id (UCID: The Unified Cryptoasset ID), preferred for exact identity resolution."
+        },
+        "slug": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target asset slug."
+        },
+        "symbol": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target asset symbol. When only symbol is provided, the runner uses the default market-data API resolution."
+        },
+        "convert": {
+          "type": "string",
+          "minLength": 1,
+          "default": "USD",
+          "description": "Quote currency for market context."
+        },
+        "search_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30,
+          "default": 14,
+          "description": "Official-account lookback window for live social search."
+        },
+        "news_limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 5,
+          "description": "Maximum public-content items to include."
+        },
+        "token_profile_context": {
+          "type": "object",
+          "description": "Optional upstream profile snapshot supplied by the caller or User Agent."
+        },
+        "official_updates": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "default": [],
+          "description": "Optional caller-supplied official update records for deterministic fixtures."
+        },
+        "news_items": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "default": [],
+          "description": "Optional caller-supplied public content records for deterministic fixtures."
+        },
+        "live_fetch": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, request current package-owned facts. Canonical acceptance uses true."
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "cmcid"
+          ]
+        },
+        {
+          "required": [
+            "slug"
+          ]
+        },
+        {
+          "required": [
+            "symbol"
+          ]
+        }
+      ]
+    },
+    "assess_altcoin_asset_structure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "token_id_or_symbol": {
+          "type": "string",
+          "description": "Token symbol, slug, or id used as the human-readable asset anchor."
+        },
+        "platform": {
+          "type": "string",
+          "description": "Chain or platform slug for the token contract, for example ethereum."
+        },
+        "platformName": {
+          "type": "string",
+          "description": "Optional alternate platform name accepted by some contract-scoped lanes."
+        },
+        "contract_address": {
+          "type": "string",
+          "description": "Token contract address on the specified platform; required to avoid symbol-only ambiguity."
+        }
+      },
+      "required": [
+        "token_id_or_symbol",
+        "platform",
+        "contract_address"
+      ]
+    },
+    "assess_tvl_quality_and_composition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "type": "string"
+        },
+        "time_window": {
+          "type": "string"
+        },
+        "composition_depth": {
+          "type": "string",
+          "description": "Optional composition depth used by the script runner.",
+          "enum": [
+            "none",
+            "latest",
+            "deep"
+          ]
+        }
+      },
+      "required": [
+        "protocol"
+      ]
+    },
+    "assess_exchange_market_structure_pressure": {
+      "type": "object",
+      "required": [
+        "symbol"
+      ],
+      "properties": {
+        "request_class": {
+          "type": "string",
+          "description": "Must be exchange_market_structure when supplied."
+        },
+        "symbol": {
+          "type": "string"
+        },
+        "venues": {
+          "type": "array"
+        },
+        "live_fetch": {
+          "type": "boolean",
+          "description": "Set true for a current public venue snapshot; omit when supplying compact caller observations."
+        },
+        "observations": {
+          "type": "object"
+        }
+      }
+    },
+    "assess_altcoin_sector_relative_position": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target token symbol such as RENDER, FET, or ONDO."
+        },
+        "convert": {
+          "type": "string",
+          "default": "USD",
+          "minLength": 1,
+          "description": "Quote currency forwarded to the category-detail request."
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "build_altcoin_market_context_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target token symbol such as CRV, ONDO, or RENDER."
+        },
+        "full_name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional token name used to resolve symbols that map to more than one asset."
+        },
+        "convert": {
+          "type": "string",
+          "minLength": 1,
+          "default": "USD",
+          "description": "Quote currency used for the market snapshot."
+        },
+        "protocol_slug": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional protocol slug override when a trusted upstream layer already knows which protocol should anchor the profile."
+        },
+        "holders_snapshot": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Optional holder coverage supplied by a trusted upstream layer. Omit it when live ownership coverage is unavailable.",
+          "properties": {
+            "source": {
+              "type": "string",
+              "enum": [
+                "placeholder",
+                "live"
+              ],
+              "description": "Coverage status for the supplied holder snapshot."
+            },
+            "as_of": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Timestamp or date that describes when the holder snapshot was observed."
+            },
+            "total_holders": {
+              "type": "number",
+              "description": "Total holder count if known."
+            },
+            "top_10_share_pct": {
+              "type": "number",
+              "description": "Top-10 ownership share percentage if known."
+            },
+            "top_20_share_pct": {
+              "type": "number",
+              "description": "Top-20 ownership share percentage if known."
+            },
+            "retail_share_pct": {
+              "type": "number",
+              "description": "Retail ownership share percentage if known."
+            },
+            "whale_concentration_pct": {
+              "type": "number",
+              "description": "Whale concentration percentage when a live holder lane is available."
+            },
+            "long_term_holders_pct": {
+              "type": "number",
+              "description": "Long-term holder percentage when a live holder lane is available."
+            },
+            "holder_trend": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Ownership trend label from a trusted upstream holder lane."
+            }
+          },
+          "required": [
+            "source"
+          ]
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "rank_perp_altcoin_anomaly_setups": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "top_n": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Number of highest-priority setups to keep in the primary candidate list."
+        },
+        "timeframe": {
+          "type": "string",
+          "enum": [
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ],
+          "default": "4h",
+          "description": "Deep-review timeframe forwarded to the selected top setups."
+        },
+        "min_oi_usd": {
+          "type": "number",
+          "minimum": 1000000,
+          "default": 5000000,
+          "description": "Minimum open-interest filter used before ranking the perp universe."
+        },
+        "oi_change_threshold": {
+          "type": "number",
+          "minimum": 0.1,
+          "default": 5.0,
+          "description": "Minimum open-interest change threshold that counts as an anomaly."
+        },
+        "fr_threshold": {
+          "type": "number",
+          "minimum": 0.001,
+          "default": 0.05,
+          "description": "Absolute funding threshold used for extreme-funding signals."
+        },
+        "lsr_threshold": {
+          "type": "number",
+          "minimum": 1.05,
+          "default": 1.65,
+          "description": "Long-short-ratio threshold used to flag one-sided crowding."
+        },
+        "lsr_timeframes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "5m",
+              "15m",
+              "30m",
+              "1h",
+              "4h",
+              "12h",
+              "24h"
+            ]
+          },
+          "description": "Timeframes used when checking long-short-ratio crowding."
+        },
+        "use_spot_confirmation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to keep the optional spot-confirmation downgrade layer enabled."
+        },
+        "pre_top_k": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Optional number of pre-ranked candidates to review before selecting top_n."
+        },
+        "snapshot_per_page": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 100,
+          "description": "Snapshot page size for the multi-page perp universe scan."
+        },
+        "snapshot_max_pages": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 2,
+          "description": "Maximum number of snapshot pages to scan before ranking candidates."
+        },
+        "symbol_allowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional list of symbols to keep inside the scan universe."
+        },
+        "excluded_symbols": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional list of symbols to exclude from the scan universe."
+        }
+      },
+      "required": [
+        "top_n"
+      ]
+    },
+    "assess_altcoin_kol_consensus_with_identity_resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target token symbol such as CRV, RENDER, or ONDO."
+        },
+        "full_name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional token name used to disambiguate symbols that map to multiple assets."
+        },
+        "convert": {
+          "type": "string",
+          "default": "USD",
+          "minLength": 1,
+          "description": "Quote currency used for the market snapshot."
+        },
+        "kol_search_hours": {
+          "type": "integer",
+          "default": 72,
+          "minimum": 24,
+          "maximum": 168,
+          "description": "Lookback window, in hours, for the discussion scan."
+        },
+        "business_data": {
+          "type": "object",
+          "description": "Optional caller-provided token identity, market snapshot, and discussion analysis used for local or pre-fetched execution without live data access."
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "monitor_altcoin_season_transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "time_window": {
+          "description": "Input field for monitor altcoin season transition; provide time window when overriding the default.",
+          "type": "string",
+          "default": "30d"
+        }
+      },
+      "required": []
+    },
+    "macro_liquidity_monitor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "preview"
+      ],
+      "properties": {
+        "preview": {
+          "type": "boolean",
+          "const": true,
+          "description": "Must be true. The skill exposes no user-tunable analytical parameters."
+        }
+      }
+    },
+    "macro_news_aggregator": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preview": {
+          "type": "boolean",
+          "enum": [
+            true
+          ],
+          "description": "Default trigger for the current macro news aggregation run."
+        },
+        "lookback_hours": {
+          "type": "integer",
+          "minimum": 24,
+          "maximum": 168,
+          "default": 72,
+          "description": "Lookback window for new macro, geopolitical, and tech-stock-relevant public information."
+        },
+        "live_fetch": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, run current package-owned search and cleaning."
+        }
+      },
+      "required": [
+        "preview"
+      ]
+    },
+    "assess_macro_liquidity_risk_regime": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "include_recent_discussion": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether to request a recent discussion layer in addition to the core indicator read. Fast-beta keeps this optional layer disabled unless an approved discussion lane is available."
+        }
+      }
+    },
+    "macro_financial_conditions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "lookback_days": {
+          "type": "integer",
+          "minimum": 14,
+          "maximum": 180,
+          "default": 30,
+          "description": "Number of calendar days used for recent trend context."
+        },
+        "series": {
+          "type": "object",
+          "description": "Optional caller-supplied observation snapshot for deterministic replay or fixture execution."
+        },
+        "live_fetch": {
+          "type": "boolean",
+          "default": false,
+          "description": "Optional legacy flag; when series is absent, the script automatically fetches current macro observations."
+        }
+      },
+      "required": [
+        "lookback_days"
+      ]
+    },
+    "estimate_large_trade_liquidity_risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "token_id_or_symbol": {
+          "description": "Input field for estimate large trade liquidity risk; provide token id or symbol when overriding the default.",
+          "type": "string",
+          "default": "AAVE"
+        },
+        "platform": {
+          "description": "Input field for estimate large trade liquidity risk; provide platform when overriding the default.",
+          "type": "string",
+          "default": "ethereum"
+        },
+        "token_address": {
+          "description": "Input field for estimate large trade liquidity risk; provide token address when overriding the default.",
+          "type": "string",
+          "default": "0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9"
+        },
+        "dex_slug": {
+          "description": "Input field for estimate large trade liquidity risk; provide dex slug when overriding the default.",
+          "type": "string",
+          "default": "uniswap-v3"
+        },
+        "notional_usd": {
+          "description": "Input field for estimate large trade liquidity risk; provide notional usd when overriding the default.",
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 1000000
+        }
+      },
+      "required": [
+        "token_id_or_symbol",
+        "notional_usd"
+      ]
+    },
+    "assess_pullback_entry_quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "candidate_trade": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "symbol": {
+              "type": "string",
+              "description": "Symbol."
+            },
+            "side": {
+              "type": "string",
+              "description": "Side.",
+              "enum": [
+                "long",
+                "short"
+              ]
+            },
+            "ohlcv": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "high": {
+                  "type": "array",
+                  "minItems": 20,
+                  "items": {
+                    "type": "number",
+                    "description": "High series."
+                  },
+                  "description": "Caller-supplied list of high records."
+                },
+                "low": {
+                  "type": "array",
+                  "minItems": 20,
+                  "items": {
+                    "type": "number",
+                    "description": "Low series."
+                  },
+                  "description": "Caller-supplied list of low records."
+                },
+                "close": {
+                  "type": "array",
+                  "minItems": 20,
+                  "items": {
+                    "type": "number",
+                    "description": "Close series."
+                  },
+                  "description": "Caller-supplied list of close records."
+                }
+              },
+              "required": [
+                "high",
+                "low",
+                "close"
+              ],
+              "description": "Caller-supplied ohlcv object."
+            }
+          },
+          "required": [
+            "symbol",
+            "side",
+            "ohlcv"
+          ],
+          "description": "Caller-supplied candidate trade object."
+        },
+        "entry_zone": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "lower": {
+              "type": "number",
+              "description": "Lower bound.",
+              "minimum": 0
+            },
+            "upper": {
+              "type": "number",
+              "description": "Upper bound.",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "lower",
+            "upper"
+          ],
+          "description": "Caller-supplied entry zone object."
+        },
+        "horizon": {
+          "type": "string",
+          "description": "Trade horizon.",
+          "enum": [
+            "intraday",
+            "swing",
+            "position"
+          ]
+        },
+        "risk_preference": {
+          "type": "string",
+          "description": "Risk preference.",
+          "enum": [
+            "conservative",
+            "balanced",
+            "aggressive"
+          ]
+        }
+      },
+      "required": [
+        "candidate_trade",
+        "entry_zone",
+        "horizon",
+        "risk_preference"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "build_crypto_event_watchlist": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "horizon": {
+          "type": "string",
+          "default": "7d"
+        },
+        "max_events": {
+          "type": "integer",
+          "default": 12
+        },
+        "protocols": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "aave"
+          ]
+        },
+        "include_recent_news": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "required": []
+    },
+    "detect_event_social_propagation_risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "event_query": {
+          "description": "Event, rumor, or claim to check for public social propagation risk.",
+          "type": "string"
+        },
+        "asset": {
+          "description": "Optional asset symbol or short asset label linked to the event.",
+          "type": "string",
+          "default": "BTC"
+        },
+        "lookback_hours": {
+          "description": "Lookback window in hours, from 1 to 168; defaults to 12.",
+          "type": "integer",
+          "default": 12
+        },
+        "max_posts": {
+          "description": "Maximum content-search request limit, from 1 to 10; defaults to 10.",
+          "type": "integer",
+          "default": 10
+        }
+      },
+      "required": [
+        "event_query"
+      ]
+    },
+    "build_indicator_trade_watchlist": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "universe": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeframe": {
+          "type": "string"
+        }
+      },
+      "required": []
+    },
+    "build_daily_market_brief": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "time_window": {
+          "type": "string",
+          "enum": [
+            "1d",
+            "7d",
+            "30d",
+            "90d"
+          ],
+          "default": "30d",
+          "description": "Briefing lookback window used for market, macro, sector, and headline context."
+        },
+        "fixture_evidence": {
+          "type": "object",
+          "description": "Optional local test/demo override consumed before normalization."
+        }
+      },
+      "required": []
+    },
+    "analyze_cross_asset_performance_divergence": {
+      "type": "object",
+      "required": [
+        "base_asset",
+        "quote_assets"
+      ],
+      "properties": {
+        "request_class": {
+          "type": "string",
+          "description": "Must be cross_asset_chart when supplied."
+        },
+        "base_asset": {
+          "type": "string"
+        },
+        "quote_assets": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "lookback_days": {
+          "type": "integer"
+        },
+        "observations": {
+          "type": "object"
+        }
+      }
+    },
+    "cross_asset_market_charting": {
+      "type": "object",
+      "required": [
+        "base_asset",
+        "quote_assets"
+      ],
+      "properties": {
+        "request_class": {
+          "type": "string",
+          "description": "Must be cross_asset_chart when supplied."
+        },
+        "base_asset": {
+          "type": "string",
+          "description": "Base crypto asset symbol used as the indexed performance anchor."
+        },
+        "quote_assets": {
+          "type": "array",
+          "description": "Comparison asset list; each item should include a symbol and asset_type.",
+          "items": {
+            "type": "object"
+          }
+        },
+        "lookback_days": {
+          "type": "integer",
+          "description": "Requested chart window in calendar days for the aligned observations."
+        },
+        "observations": {
+          "type": "object",
+          "description": "Caller-supplied close observations keyed by asset symbol; each series should contain date and close values."
+        }
+      }
+    },
+    "build_derivatives_risk_memo": {
+      "type": "object",
+      "properties": {
+        "positions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "venue": {
+                "type": "string",
+                "description": "Venue name attached to the supplied derivatives position."
+              },
+              "symbol": {
+                "type": "string",
+                "description": "Instrument symbol for the supplied derivatives position."
+              },
+              "side": {
+                "type": "string",
+                "description": "Position direction for the supplied derivatives position.",
+                "enum": [
+                  "long",
+                  "short"
+                ]
+              },
+              "position_size_usd": {
+                "type": "number",
+                "description": "Position notional expressed in USD.",
+                "minimum": 0
+              },
+              "mark_price": {
+                "type": "number",
+                "description": "Current mark price used to measure liquidation distance.",
+                "exclusiveMinimum": 0
+              },
+              "liquidation_price": {
+                "type": "number",
+                "description": "Liquidation price for the supplied position row.",
+                "exclusiveMinimum": 0
+              },
+              "margin_usd": {
+                "type": "number",
+                "description": "Current margin allocated to the supplied position in USD.",
+                "minimum": 0
+              },
+              "maintenance_margin_usd": {
+                "type": "number",
+                "description": "Maintenance margin requirement for the supplied position in USD.",
+                "minimum": 0
+              },
+              "funding_rate_8h_bps": {
+                "type": "number",
+                "description": "Funding rate per eight-hour window, expressed in basis points."
+              },
+              "hours_held": {
+                "type": "number",
+                "description": "Modeled holding window in hours for the supplied position.",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "venue",
+              "symbol",
+              "side",
+              "position_size_usd",
+              "mark_price",
+              "liquidation_price",
+              "margin_usd",
+              "maintenance_margin_usd",
+              "funding_rate_8h_bps"
+            ],
+            "description": "Caller-supplied position object."
+          },
+          "minItems": 1,
+          "description": "Caller-supplied list of position records."
+        },
+        "venue_scope": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "description": "Venue name included in the memo scope."
+          },
+          "minItems": 1,
+          "description": "Caller-supplied list of venue scope records."
+        },
+        "risk_thresholds": {
+          "type": "object",
+          "properties": {
+            "high_liq_distance_pct": {
+              "type": "number",
+              "description": "Threshold used to mark liquidation distance as high risk.",
+              "minimum": 0
+            },
+            "high_funding_drag_usd_8h": {
+              "type": "number",
+              "description": "Threshold used to mark eight-hour funding drag as high risk.",
+              "minimum": 0
+            },
+            "min_buffer_pct": {
+              "type": "number",
+              "description": "Minimum acceptable margin-buffer percentage for the memo.",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "high_liq_distance_pct",
+            "high_funding_drag_usd_8h",
+            "min_buffer_pct"
+          ],
+          "description": "Caller-supplied risk thresholds object."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "positions",
+        "venue_scope",
+        "risk_thresholds"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "build_protocol_risk_memo": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "protocol",
+        "risk_dimensions",
+        "risk_controls"
+      ],
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "description": "Protocol name or identifier for the risk memo subject."
+        },
+        "risk_dimensions": {
+          "type": "object",
+          "description": "Caller-supplied risk observations across smart-contract, oracle, liquidity, economic, and centralization dimensions."
+        },
+        "risk_controls": {
+          "type": "object",
+          "description": "Caller-supplied position limits, blocked lanes, review cadence, or mitigation controls."
+        },
+        "evidence_items": {
+          "type": "array",
+          "description": "Optional supporting observations or case notes that enrich the memo without replacing the core risk dimensions."
+        }
+      }
+    },
+    "build_options_rollover_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "current_options_book": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "ticker": {
+                "type": "string",
+                "description": "Option identifier."
+              },
+              "option_type": {
+                "type": "string",
+                "description": "Call or put.",
+                "enum": [
+                  "call",
+                  "put"
+                ]
+              },
+              "quantity": {
+                "type": "number",
+                "description": "Number of contracts."
+              },
+              "contract_multiplier": {
+                "type": "number",
+                "description": "Contract multiplier.",
+                "minimum": 0
+              },
+              "delta": {
+                "type": "number",
+                "description": "Per-contract delta."
+              },
+              "gamma": {
+                "type": "number",
+                "description": "Per-contract gamma."
+              },
+              "theta": {
+                "type": "number",
+                "description": "Per-contract theta."
+              },
+              "vega": {
+                "type": "number",
+                "description": "Per-contract vega."
+              },
+              "days_to_expiry": {
+                "type": "number",
+                "description": "Days to expiry.",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "ticker",
+              "option_type",
+              "quantity",
+              "contract_multiplier",
+              "delta",
+              "gamma",
+              "theta",
+              "vega",
+              "days_to_expiry"
+            ],
+            "description": "Caller-supplied current options book object."
+          },
+          "description": "Caller-supplied list of current options book records."
+        },
+        "expiry_targets": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "target_days": {
+                "type": "number",
+                "description": "Target days to expiry.",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "target_days"
+            ],
+            "description": "Caller-supplied expiry target object."
+          },
+          "description": "Caller-supplied list of expiry target records."
+        },
+        "allowed_instruments": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "description": "Allowed option family."
+          },
+          "description": "Caller-supplied list of allowed instrument records."
+        }
+      },
+      "required": [
+        "current_options_book",
+        "expiry_targets",
+        "allowed_instruments"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "construct_delta_neutral_strategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "capital": {
+          "type": "number",
+          "description": "Capital in USD.",
+          "minimum": 0
+        },
+        "collateral": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "spot_asset": {
+              "type": "string",
+              "description": "Optional spot asset."
+            },
+            "stable_balance_usd": {
+              "type": "number",
+              "description": "Stable collateral.",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "stable_balance_usd"
+          ],
+          "description": "Caller-supplied collateral object."
+        },
+        "allowed_venues": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "description": "Allowed venue or instrument family."
+          },
+          "description": "Caller-supplied list of allowed venue records."
+        },
+        "risk_budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_drawdown_pct": {
+              "type": "number",
+              "description": "Max drawdown.",
+              "minimum": 0
+            },
+            "carry_tolerance": {
+              "type": "string",
+              "description": "Carry tolerance.",
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ]
+            }
+          },
+          "required": [
+            "max_drawdown_pct",
+            "carry_tolerance"
+          ],
+          "description": "Caller-supplied risk budget object."
+        }
+      },
+      "required": [
+        "capital",
+        "collateral",
+        "allowed_venues",
+        "risk_budget"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "exchange_market_structure_monitor": {
+      "type": "object",
+      "required": [
+        "symbol"
+      ],
+      "properties": {
+        "request_class": {
+          "type": "string",
+          "description": "Must be exchange_market_structure when supplied."
+        },
+        "symbol": {
+          "type": "string"
+        },
+        "venues": {
+          "type": "array"
+        },
+        "observations": {
+          "type": "object"
+        }
+      }
+    },
+    "build_portfolio_rebalance_plan": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "current_holdings",
+        "target_weights",
+        "constraints"
+      ],
+      "properties": {
+        "current_holdings": {
+          "type": "array",
+          "description": "Caller-supplied current portfolio holdings with asset and position sizing context."
+        },
+        "target_weights": {
+          "type": "array",
+          "description": "Caller-supplied target allocation weights or desired end-state portfolio mix."
+        },
+        "constraints": {
+          "type": "object",
+          "description": "Caller-supplied turnover, tolerance, timing, or policy constraints for the rebalance memo."
+        },
+        "evidence_context": {
+          "type": "array",
+          "description": "Optional caller-supplied conviction or qualitative evidence used to prioritize tradeoffs."
+        }
+      }
+    },
+    "build_rebalance_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "current_holdings": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "asset": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Asset symbol."
+              },
+              "value_usd": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Current modeled USD value."
+              }
+            },
+            "required": [
+              "asset",
+              "value_usd"
+            ],
+            "description": "Caller-supplied current holding object."
+          },
+          "description": "Caller-supplied list of current holding records."
+        },
+        "target_weights": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "asset": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Asset symbol."
+              },
+              "target_weight": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Target portfolio weight as a decimal share."
+              }
+            },
+            "required": [
+              "asset",
+              "target_weight"
+            ],
+            "description": "Caller-supplied target weight object."
+          },
+          "description": "Caller-supplied list of target weight records."
+        },
+        "constraints": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "weight_tolerance_pct": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Tolerance band in percentage points."
+            },
+            "max_turnover_usd": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Optional turnover cap supplied by the caller."
+            }
+          },
+          "required": [
+            "weight_tolerance_pct"
+          ],
+          "description": "Caller-supplied constraints object."
+        }
+      },
+      "required": [
+        "current_holdings",
+        "target_weights",
+        "constraints"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "design_atr_based_trade_risk_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "entry_idea": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "side": {
+              "type": "string",
+              "description": "Trade side.",
+              "enum": [
+                "long",
+                "short"
+              ]
+            },
+            "entry_price": {
+              "type": "number",
+              "description": "Entry price.",
+              "minimum": 0
+            },
+            "ohlcv": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "high": {
+                  "type": "array",
+                  "minItems": 20,
+                  "items": {
+                    "type": "number",
+                    "description": "High series."
+                  },
+                  "description": "Caller-supplied list of high records."
+                },
+                "low": {
+                  "type": "array",
+                  "minItems": 20,
+                  "items": {
+                    "type": "number",
+                    "description": "Low series."
+                  },
+                  "description": "Caller-supplied list of low records."
+                },
+                "close": {
+                  "type": "array",
+                  "minItems": 20,
+                  "items": {
+                    "type": "number",
+                    "description": "Close series."
+                  },
+                  "description": "Caller-supplied list of close records."
+                }
+              },
+              "required": [
+                "high",
+                "low",
+                "close"
+              ],
+              "description": "Caller-supplied ohlcv object."
+            }
+          },
+          "required": [
+            "side",
+            "entry_price",
+            "ohlcv"
+          ],
+          "description": "Caller-supplied entry idea object."
+        },
+        "stop_logic": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "atr_period": {
+              "type": "integer",
+              "description": "ATR period.",
+              "minimum": 1
+            },
+            "atr_multiple": {
+              "type": "number",
+              "description": "ATR multiple.",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "atr_period",
+            "atr_multiple"
+          ],
+          "description": "Caller-supplied stop logic object."
+        },
+        "capital_at_risk": {
+          "type": "number",
+          "description": "Capital at risk in quote currency.",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "entry_idea",
+        "stop_logic",
+        "capital_at_risk"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "calculate_atr_trade_risk_levels": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "entry_idea": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "side": {
+              "type": "string",
+              "description": "Trade side.",
+              "enum": [
+                "long",
+                "short"
+              ]
+            },
+            "entry_price": {
+              "type": "number",
+              "description": "Entry price; must sit within the latest supplied high/low range.",
+              "exclusiveMinimum": 0
+            },
+            "ohlcv": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "high": {
+                  "type": "array",
+                  "minItems": 20,
+                  "items": {
+                    "type": "number",
+                    "description": "High price."
+                  },
+                  "description": "Caller-supplied high price series in quote currency."
+                },
+                "low": {
+                  "type": "array",
+                  "minItems": 20,
+                  "items": {
+                    "type": "number",
+                    "description": "Low price."
+                  },
+                  "description": "Caller-supplied low price series in quote currency."
+                },
+                "close": {
+                  "type": "array",
+                  "minItems": 20,
+                  "items": {
+                    "type": "number",
+                    "description": "Close price."
+                  },
+                  "description": "Caller-supplied close price series in quote currency."
+                }
+              },
+              "required": [
+                "high",
+                "low",
+                "close"
+              ],
+              "description": "Caller-supplied OHLC object with at least 20 aligned bars."
+            }
+          },
+          "required": [
+            "side",
+            "entry_price",
+            "ohlcv"
+          ],
+          "description": "Caller-supplied entry idea object."
+        },
+        "stop_logic": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "atr_period": {
+              "type": "integer",
+              "description": "ATR period.",
+              "minimum": 1
+            },
+            "atr_multiple": {
+              "type": "number",
+              "description": "ATR multiple.",
+              "exclusiveMinimum": 0
+            }
+          },
+          "required": [
+            "atr_period",
+            "atr_multiple"
+          ],
+          "description": "Caller-supplied stop logic object."
+        },
+        "capital_at_risk": {
+          "type": "number",
+          "description": "Capital at risk in quote currency.",
+          "exclusiveMinimum": 0
+        }
+      },
+      "required": [
+        "entry_idea",
+        "stop_logic",
+        "capital_at_risk"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "calculate_perp_position_liquidation_buffer": {
+      "type": "object",
+      "properties": {
+        "position_snapshot": {
+          "type": "object",
+          "properties": {
+            "venue": {
+              "type": "string",
+              "description": "Venue name attached to the supplied position snapshot."
+            },
+            "symbol": {
+              "type": "string",
+              "description": "Instrument symbol for the supplied perpetual contract, such as BTCUSDT."
+            },
+            "side": {
+              "type": "string",
+              "description": "Position direction for the supplied perpetual position.",
+              "enum": [
+                "long",
+                "short"
+              ]
+            },
+            "mark_price": {
+              "type": "number",
+              "description": "Current mark price used to measure distance to liquidation.",
+              "exclusiveMinimum": 0
+            },
+            "entry_price": {
+              "type": "number",
+              "description": "Average entry price for the supplied position.",
+              "exclusiveMinimum": 0
+            },
+            "liquidation_price": {
+              "type": "number",
+              "description": "Liquidation price for the supplied position snapshot.",
+              "exclusiveMinimum": 0
+            },
+            "position_size_usd": {
+              "type": "number",
+              "description": "Position notional expressed in USD.",
+              "minimum": 0
+            },
+            "margin_usd": {
+              "type": "number",
+              "description": "Current margin allocated to the position in USD.",
+              "minimum": 0
+            },
+            "maintenance_margin_usd": {
+              "type": "number",
+              "description": "Maintenance margin requirement for the position in USD.",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "side",
+            "mark_price",
+            "entry_price",
+            "liquidation_price",
+            "position_size_usd",
+            "margin_usd",
+            "maintenance_margin_usd"
+          ],
+          "description": "Caller-supplied position snapshot object."
+        },
+        "funding_context": {
+          "type": "object",
+          "properties": {
+            "funding_rate_8h_bps": {
+              "type": "number",
+              "description": "Funding rate per eight-hour window, expressed in basis points."
+            },
+            "hours_held": {
+              "type": "number",
+              "description": "Modeled holding window in hours used to scale funding drag.",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "funding_rate_8h_bps",
+            "hours_held"
+          ],
+          "description": "Caller-supplied funding context object."
+        },
+        "live_fetch": {
+          "type": "boolean",
+          "description": "Optional explicit request to attach approved public market context. Core metrics do not require this field."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "position_snapshot",
+        "funding_context"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "monitor_perp_position_risk": {
+      "type": "object",
+      "properties": {
+        "position_snapshot": {
+          "type": "object",
+          "properties": {
+            "venue": {
+              "type": "string",
+              "description": "Venue name attached to the supplied position snapshot."
+            },
+            "symbol": {
+              "type": "string",
+              "description": "Instrument symbol for the supplied perpetual contract, such as BTCUSDT."
+            },
+            "side": {
+              "type": "string",
+              "description": "Position direction for the supplied perpetual position.",
+              "enum": [
+                "long",
+                "short"
+              ]
+            },
+            "mark_price": {
+              "type": "number",
+              "description": "Current mark price used to measure distance to liquidation.",
+              "exclusiveMinimum": 0
+            },
+            "entry_price": {
+              "type": "number",
+              "description": "Average entry price for the supplied position.",
+              "exclusiveMinimum": 0
+            },
+            "liquidation_price": {
+              "type": "number",
+              "description": "Liquidation price for the supplied position snapshot.",
+              "exclusiveMinimum": 0
+            },
+            "position_size_usd": {
+              "type": "number",
+              "description": "Position notional expressed in USD.",
+              "minimum": 0
+            },
+            "margin_usd": {
+              "type": "number",
+              "description": "Current margin allocated to the position in USD.",
+              "minimum": 0
+            },
+            "maintenance_margin_usd": {
+              "type": "number",
+              "description": "Maintenance margin requirement for the position in USD.",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "side",
+            "mark_price",
+            "entry_price",
+            "liquidation_price",
+            "position_size_usd",
+            "margin_usd",
+            "maintenance_margin_usd"
+          ],
+          "description": "Caller-supplied position snapshot object."
+        },
+        "funding_context": {
+          "type": "object",
+          "properties": {
+            "funding_rate_8h_bps": {
+              "type": "number",
+              "description": "Funding rate per eight-hour window, expressed in basis points."
+            },
+            "hours_held": {
+              "type": "number",
+              "description": "Modeled holding window in hours used to scale funding drag.",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "funding_rate_8h_bps"
+          ],
+          "description": "Caller-supplied funding context object."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "position_snapshot",
+        "funding_context"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "detect_liquidation_cluster_risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string"
+        },
+        "venue": {
+          "type": "string"
+        },
+        "window": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "review_perp_orderbook_pressure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "Perpetual market base symbol, for example BTC or ETH. The script normalizes it to the relevant perp pair for data access."
+        },
+        "venue": {
+          "type": "string",
+          "description": "Optional exchange or venue label used as the orderbook venue scope, for example Binance, OKX, or Bybit. Defaults to Binance when omitted."
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "detect_leverage_reset_completion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "description": "Base asset or perpetual pair to inspect, such as BTC or BTCUSDT.",
+          "type": "string",
+          "default": "BTC"
+        },
+        "window": {
+          "description": "Lookback window in Nd format, from 2d to 90d; defaults to 30d.",
+          "type": "string",
+          "default": "30d"
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "analyze_hyperliquid_whale_positioning": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "wallet_address": {
+          "type": "string",
+          "description": "Wallet identifier supplied by the User Agent."
+        },
+        "symbol": {
+          "type": "string",
+          "description": "Optional instrument symbol used to focus the positioning read."
+        },
+        "window": {
+          "type": "string",
+          "description": "Caller-selected observation window label."
+        },
+        "position_snapshot": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Caller-supplied wallet position rows or compact aggregate position state."
+        }
+      },
+      "required": [
+        "wallet_address",
+        "position_snapshot"
+      ]
+    },
+    "rank_liquidation_magnet_levels": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "description": "Base asset or perpetual pair to inspect, such as BTC or BTCUSDT.",
+          "type": "string",
+          "default": "BTC"
+        },
+        "venue": {
+          "description": "Supported derivatives venue name to inspect; defaults to Binance.",
+          "type": "string",
+          "enum": [
+            "Binance",
+            "OKX",
+            "Bybit"
+          ],
+          "default": "Binance"
+        },
+        "top_n": {
+          "description": "Maximum number of ranked magnet levels to return, from 1 to 20.",
+          "type": "integer",
+          "default": 5
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "review_hyperliquid_wallet_risk_posture": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "wallet_address": {
+          "type": "string",
+          "description": "Wallet identifier supplied by the User Agent."
+        },
+        "window": {
+          "type": "string",
+          "description": "Caller-selected observation window label."
+        },
+        "account_snapshot": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Caller-supplied account-level margin, equity, and withdrawable state. The skill accepts either a flat account object or a nested account_snapshot.account_state object."
+        },
+        "position_snapshot": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Caller-supplied open position rows or compact aggregate position state."
+        }
+      },
+      "required": [
+        "wallet_address",
+        "account_snapshot",
+        "position_snapshot"
+      ]
+    },
+    "score_holder_concentration_risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "token_id_or_symbol": {
+          "type": "string",
+          "description": "Token symbol or token identifier used to scope the holder concentration check."
+        },
+        "platform": {
+          "type": "string",
+          "description": "Canonical chain or platform name for the token contract, for example ethereum or solana."
+        },
+        "contract_address": {
+          "type": "string",
+          "description": "Token contract address required by the approved DEX holder surfaces."
+        },
+        "caller_evidence": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Optional caller-supplied compact holder evidence for environments where live holder lanes are unavailable."
+        }
+      },
+      "required": [
+        "token_id_or_symbol",
+        "platform",
+        "contract_address"
+      ]
+    },
+    "compare_funding_rate_across_venues": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "Asset or contract symbol to compare, normalized to uppercase."
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "long",
+            "short",
+            "neutral"
+          ],
+          "description": "Optional trade-side lens for guidance; defaults to neutral."
+        },
+        "venues": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2,
+          "maxItems": 8,
+          "description": "Optional venue list; defaults to Binance, OKX, and Bybit."
+        },
+        "window": {
+          "type": "string",
+          "pattern": "^([2-9]|[1-8][0-9]|90)d$",
+          "description": "Optional context window in days, formatted as Nd from 2d to 90d; defaults to 30d."
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "compare_cross_venue_true_cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "order_size": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Modeled order size in USD."
+        },
+        "urgency": {
+          "type": "string",
+          "enum": [
+            "low",
+            "normal",
+            "high"
+          ],
+          "default": "normal",
+          "description": "Optional urgency setting used for the modeled slippage penalty."
+        },
+        "venue_shortlist": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Shortlisted venue names to keep in the comparison."
+          },
+          "description": "Caller-supplied list of venue shortlist records."
+        },
+        "venue_candidates": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "venue": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Venue name."
+              },
+              "venue_type": {
+                "type": "string",
+                "enum": [
+                  "cex",
+                  "dex"
+                ],
+                "description": "Venue class."
+              },
+              "fee_bps": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Modeled fee in basis points."
+              },
+              "slippage_bps": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Modeled slippage in basis points."
+              },
+              "fixed_cost_usd": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Fixed route cost such as gas or bridge overhead."
+              },
+              "latency_score": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Caller-supplied execution quality score."
+              }
+            },
+            "required": [
+              "venue",
+              "venue_type",
+              "fee_bps",
+              "slippage_bps",
+              "fixed_cost_usd",
+              "latency_score"
+            ],
+            "description": "Caller-supplied venue candidate object."
+          },
+          "description": "Caller-supplied list of venue candidate records."
+        },
+        "live_fetch": {
+          "type": "boolean",
+          "default": false,
+          "description": "Optional flag to request approved public context; false keeps the model on caller-supplied venue candidates only."
+        }
+      },
+      "required": [
+        "order_size",
+        "venue_shortlist",
+        "venue_candidates"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "compare_same_class_venue_true_cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "order_size": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Modeled order size in USD; must be greater than zero."
+        },
+        "urgency": {
+          "type": "string",
+          "enum": [
+            "low",
+            "normal",
+            "high"
+          ],
+          "default": "normal",
+          "description": "Optional urgency setting used for the modeled slippage penalty."
+        },
+        "venue_shortlist": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact venue name to keep in the comparison. Matching is case-sensitive."
+          },
+          "description": "Caller-supplied venue filter. Only candidates whose venue name exactly matches this shortlist are retained."
+        },
+        "venue_candidates": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "venue": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Venue name."
+              },
+              "venue_type": {
+                "type": "string",
+                "enum": [
+                  "cex",
+                  "dex"
+                ],
+                "description": "Venue class."
+              },
+              "fee_bps": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Modeled fee in basis points."
+              },
+              "slippage_bps": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Modeled slippage in basis points."
+              },
+              "fixed_cost_usd": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Fixed route cost such as gas or bridge overhead."
+              },
+              "latency_score": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "Caller-supplied execution quality score from 0 to 1. It is returned for context but does not change the modeled cost ranking."
+              }
+            },
+            "required": [
+              "venue",
+              "venue_type",
+              "fee_bps",
+              "slippage_bps",
+              "fixed_cost_usd",
+              "latency_score"
+            ],
+            "description": "Caller-supplied venue candidate object."
+          },
+          "description": "Caller-supplied list of venue candidate records."
+        },
+        "live_fetch": {
+          "type": "boolean",
+          "default": false,
+          "description": "Optional flag to attach approved public context when the runtime environment supports it. It never replaces caller-supplied venue_candidates."
+        }
+      },
+      "required": [
+        "order_size",
+        "venue_shortlist",
+        "venue_candidates"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "reconcile_multi_venue_bookkeeping": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ledgers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "venue": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Venue, wallet bucket, or custody location."
+              },
+              "asset": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Asset symbol."
+              },
+              "side": {
+                "type": "string",
+                "enum": [
+                  "buy",
+                  "sell",
+                  "transfer_in",
+                  "transfer_out",
+                  "fee",
+                  "reward"
+                ],
+                "description": "Signed ledger movement type."
+              },
+              "quantity": {
+                "type": "number",
+                "description": "Asset quantity recorded on the ledger row."
+              },
+              "price_usd": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Reference unit price in USD."
+              },
+              "timestamp": {
+                "type": "string",
+                "minLength": 1,
+                "description": "ISO-8601 timestamp."
+              }
+            },
+            "required": [
+              "venue",
+              "asset",
+              "side",
+              "quantity",
+              "price_usd",
+              "timestamp"
+            ],
+            "description": "Caller-supplied ledger object."
+          },
+          "description": "Caller-supplied list of ledger records."
+        },
+        "balances": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "venue": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Venue or wallet bucket."
+              },
+              "asset": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Asset symbol."
+              },
+              "quantity": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Ending balance quantity."
+              },
+              "value_usd": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Caller-supplied ending balance value in USD. This is a bookkeeping value, not automatically recomputed from live market prices."
+              }
+            },
+            "required": [
+              "venue",
+              "asset",
+              "quantity",
+              "value_usd"
+            ],
+            "description": "Caller-supplied balance object."
+          },
+          "description": "Caller-supplied list of balance records."
+        },
+        "fills": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "venue": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Venue name."
+              },
+              "asset": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Asset symbol."
+              },
+              "side": {
+                "type": "string",
+                "enum": [
+                  "buy",
+                  "sell"
+                ],
+                "description": "Trade side."
+              },
+              "quantity": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Filled quantity."
+              },
+              "price_usd": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Fill price in USD."
+              },
+              "fee_usd": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Fee paid in USD."
+              },
+              "timestamp": {
+                "type": "string",
+                "minLength": 1,
+                "description": "ISO-8601 timestamp."
+              }
+            },
+            "required": [
+              "venue",
+              "asset",
+              "side",
+              "quantity",
+              "price_usd",
+              "fee_usd",
+              "timestamp"
+            ],
+            "description": "Caller-supplied fill object."
+          },
+          "description": "Caller-supplied list of fill records."
+        },
+        "venues": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Normalized venue names included in the reconciliation scope."
+          },
+          "description": "Caller-supplied list of venue records."
+        }
+      },
+      "required": [
+        "ledgers",
+        "balances",
+        "fills",
+        "venues"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "compare_protocol_fee_quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocols": {
+          "type": "array",
+          "description": "Protocol slugs or names to compare.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "time_window": {
+          "type": "string",
+          "description": "Consistency lookback for retained daily fee history. Defaults to 30d.",
+          "enum": [
+            "7d",
+            "30d",
+            "90d",
+            "365d"
+          ]
+        }
+      },
+      "required": [
+        "protocols"
+      ]
+    },
+    "altcoin_sector_analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cmcid": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          ],
+          "description": "Asset id (UCID: The Unified Cryptoasset ID), preferred for exact identity resolution."
+        },
+        "slug": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact target token slug."
+        },
+        "symbol": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target token symbol such as RENDER, FET, or ONDO. When only symbol is provided, the runner uses the default market-data API resolution."
+        },
+        "convert": {
+          "type": "string",
+          "default": "USD",
+          "minLength": 1,
+          "description": "Quote currency forwarded to the category-detail request."
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "cmcid"
+          ]
+        },
+        {
+          "required": [
+            "slug"
+          ]
+        },
+        {
+          "required": [
+            "symbol"
+          ]
+        }
+      ]
+    },
+    "compare_sector_relative_strength": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sector_set": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "time_window": {
+          "type": "string"
+        }
+      },
+      "required": []
+    },
+    "compare_sector_strength": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sector_set": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "time_window": {
+          "type": "string"
+        }
+      },
+      "required": []
+    },
+    "compare_protocol_treasury_reserves": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocols": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "time_window": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocols"
+      ]
+    },
+    "assess_fork_competition_pressure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "description": "Protocol name to compare inside its retained fork-family bucket."
+        },
+        "time_window": {
+          "type": "string",
+          "description": "Optional trend window such as 30d; snapshot share remains latest retained data."
+        }
+      },
+      "required": [
+        "protocol"
+      ]
+    },
+    "compare_protocol_public_financial_quality": {
+      "type": "object",
+      "properties": {
+        "protocols": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2,
+          "description": "Protocol slugs or protocol names to compare. Use two to ten entries; each entry should identify one public protocol."
+        },
+        "top_n": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 5,
+          "description": "Maximum number of ranked protocol rows to return."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "protocols"
+      ]
+    },
+    "daily_market_overview": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preview": {
+          "type": "boolean",
+          "enum": [
+            true
+          ],
+          "description": "Required execution trigger. Public callers must pass preview=true."
+        }
+      },
+      "required": [
+        "preview"
+      ]
+    },
+    "detect_accumulation_breakout_transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cmcid": {
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string",
+              "minLength": 1
+            }
+          ],
+          "description": "Canonical asset id used to resolve the base asset symbol."
+        },
+        "slug": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Canonical asset slug used to resolve the base asset symbol."
+        },
+        "symbol": {
+          "type": "string",
+          "default": "BTC",
+          "description": "Base asset symbol to evaluate, such as BTC or ETH."
+        },
+        "venue": {
+          "type": "string",
+          "default": "Binance",
+          "description": "Venue label used to select the perpetual market context."
+        },
+        "lookback_days": {
+          "type": "integer",
+          "default": 14,
+          "minimum": 2,
+          "maximum": 90,
+          "description": "Recent lookback window used to build the transition read."
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "cmcid"
+          ]
+        },
+        {
+          "required": [
+            "slug"
+          ]
+        },
+        {
+          "required": [
+            "symbol"
+          ]
+        }
+      ]
+    },
+    "detect_market_regime": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "time_window": {
+          "type": "string",
+          "enum": [
+            "1d",
+            "7d",
+            "30d",
+            "90d"
+          ],
+          "default": "30d",
+          "description": "Lookback bucket used for market, derivatives, and macro regime aggregation."
+        },
+        "fixture_evidence": {
+          "type": "object",
+          "description": "Optional local test/demo override consumed before normalization."
+        }
+      },
+      "required": []
+    },
+    "detect_spot_perp_flow_divergence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "description": "Base asset or market pair to inspect, such as BTC or BTCUSDT.",
+          "type": "string",
+          "default": "BTC"
+        },
+        "venue": {
+          "description": "Supported market venue name to inspect; defaults to Binance.",
+          "type": "string",
+          "enum": [
+            "Binance",
+            "OKX",
+            "Bybit",
+            "Bitget",
+            "Gate.io"
+          ],
+          "default": "Binance"
+        },
+        "window": {
+          "description": "Lookback window in Nd form from 2d to 90d; defaults to 30d.",
+          "type": "string",
+          "default": "30d"
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "monitor_market_sentiment_shift": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "time_window": {
+          "type": "string",
+          "description": "Sentiment monitoring window. Defaults to the script's standard 30d horizon when omitted."
+        }
+      },
+      "required": []
+    },
+    "detect_kol_consensus_reversal": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "handles": {
+          "description": "KOL handles to inspect for recent consensus-shift evidence.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "example_alpha_1",
+            "example_alpha_2"
+          ]
+        },
+        "asset": {
+          "description": "Crypto asset symbol to use for the consensus-reversal check, such as BTC.",
+          "type": "string",
+          "default": "BTC"
+        },
+        "lookback_hours": {
+          "description": "Recent discussion window in hours; must be from 1 to 168.",
+          "type": "integer",
+          "default": 24
+        },
+        "max_posts": {
+          "description": "Maximum recent posts to retain for bounded analysis; values are clamped to the supported range.",
+          "type": "integer",
+          "default": 25
+        }
+      },
+      "required": [
+        "handles",
+        "asset"
+      ]
+    },
+    "detect_borrow_market_stress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "description": "Protocol or pool name to check, such as aave-v3.",
+          "type": "string",
+          "default": "aave-v3"
+        },
+        "time_window": {
+          "description": "Lookback window requested for borrow/lend stress context, in Nd format.",
+          "type": "string",
+          "default": "30d"
+        }
+      },
+      "required": []
+    },
+    "detect_perp_momentum_exhaustion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string"
+        },
+        "venue": {
+          "type": "string"
+        },
+        "timeframe": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "detect_volatility_squeeze_release": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "token_id_or_symbol": {
+          "type": "string"
+        },
+        "timeframe": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "token_id_or_symbol"
+      ]
+    },
+    "monitor_whale_transfer_anomalies": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "description": "Asset symbol to monitor. Defaults to BTC when omitted."
+        },
+        "chain": {
+          "type": "string",
+          "description": "Chain label used to filter transfer rows. Defaults to ethereum when omitted."
+        },
+        "window": {
+          "type": "string",
+          "enum": [
+            "1d",
+            "7d",
+            "30d"
+          ],
+          "description": "Transfer lookback window."
+        }
+      },
+      "required": []
+    },
+    "assess_stablecoin_bridge_flow_concentration": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "request_class"
+      ],
+      "properties": {
+        "request_class": {
+          "type": "string",
+          "enum": [
+            "stablecoin_bridge_flow_monitor"
+          ],
+          "description": "Must be stablecoin_bridge_flow_monitor."
+        },
+        "stablecoins": {
+          "type": "array",
+          "description": "Compact stablecoin observation rows. Each row should include asset, optional chain, circulating_usd, change_1d_usd, and peg_price. Required and non-empty for caller-supplied mode unless live_fetch=true; scripts/run.py performs numeric validation.",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "bridges": {
+          "type": "array",
+          "description": "Compact bridge observation rows. Each row should include name, optional chain, volume_24h_usd, and change_1d_pct. Required and non-empty for caller-supplied mode unless live_fetch=true; scripts/run.py performs numeric validation.",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "thresholds": {
+          "type": "object",
+          "description": "Optional interpretation thresholds, including min_flow_usd and peg_alert_bps. scripts/run.py performs numeric validation.",
+          "additionalProperties": true
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Maximum number of capped rows returned in each ranked section."
+        },
+        "live_fetch": {
+          "type": "boolean",
+          "description": "Optional live snapshot request. If the approved public snapshot is unavailable, the skill returns DATA_UNAVAILABLE instead of fabricating metrics."
+        }
+      }
+    },
+    "stablecoin_and_bridge_flow_monitor": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "request_class"
+      ],
+      "properties": {
+        "request_class": {
+          "type": "string",
+          "description": "Supported request class for this monitor."
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Maximum number of capped rows returned in each ranked section."
+        }
+      }
+    },
+    "build_exchange_transfer_guide": {
+      "type": "object",
+      "properties": {
+        "asset": {
+          "type": "string",
+          "description": "Asset symbol for the planned exchange transfer."
+        },
+        "amount": {
+          "type": "number",
+          "description": "Transfer amount for the planned exchange transfer.",
+          "minimum": 0
+        },
+        "destination": {
+          "type": "string",
+          "description": "Destination summary supplied by the caller for the transfer."
+        },
+        "transfer_constraints": {
+          "type": "object",
+          "properties": {
+            "require_whitelist_check": {
+              "type": "boolean",
+              "description": "Whether the destination must pass a whitelist check before transfer."
+            },
+            "travel_rule_required": {
+              "type": "boolean",
+              "description": "Whether travel-rule information is required before release."
+            },
+            "network": {
+              "type": "string",
+              "description": "Chosen transfer network for the planned route."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "require_whitelist_check",
+            "travel_rule_required",
+            "network"
+          ],
+          "description": "Caller-supplied transfer constraints object."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "asset",
+        "amount",
+        "destination",
+        "transfer_constraints"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "assess_withdrawal_network_choice": {
+      "type": "object",
+      "properties": {
+        "candidate_networks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "network": {
+                "type": "string",
+                "description": "Network label for the supplied withdrawal route candidate."
+              },
+              "fee_usd": {
+                "type": "number",
+                "description": "Estimated withdrawal fee expressed in USD for the candidate network.",
+                "minimum": 0
+              },
+              "eta_minutes": {
+                "type": "number",
+                "description": "Expected completion time in minutes for the candidate network.",
+                "minimum": 0
+              },
+              "reliability_score": {
+                "type": "number",
+                "description": "Reliability score for the candidate network on a zero-to-one scale.",
+                "minimum": 0
+              },
+              "min_amount_usd": {
+                "type": "number",
+                "description": "Minimum withdrawal amount in USD supported by the candidate network.",
+                "minimum": 0
+              },
+              "status": {
+                "type": "string",
+                "description": "Operational status for the candidate network.",
+                "enum": [
+                  "available",
+                  "degraded",
+                  "blocked"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "network",
+              "fee_usd",
+              "eta_minutes",
+              "reliability_score",
+              "min_amount_usd",
+              "status"
+            ],
+            "description": "Caller-supplied candidate network object."
+          },
+          "minItems": 1,
+          "description": "Caller-supplied list of candidate network records."
+        },
+        "amount": {
+          "type": "number",
+          "description": "Withdrawal amount in USD used to test network eligibility and ranking.",
+          "minimum": 0
+        },
+        "destination": {
+          "type": "string",
+          "description": "Optional destination note used for operator context."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "candidate_networks",
+        "amount"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "wc_relative_pricing_scanner": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [],
+      "anyOf": [
+        {
+          "required": [
+            "event"
+          ]
+        },
+        {
+          "required": [
+            "team"
+          ]
+        },
+        {
+          "required": [
+            "consensus_probabilities",
+            "market_quotes"
+          ]
+        }
+      ],
+      "properties": {
+        "event": {
+          "type": "object",
+          "description": "Match locator {home, away, date?}; when given (and consensus/quotes not supplied) the skill self-fetches both the executable prediction-market quotes and the external devig consensus."
+        },
+        "team": {
+          "type": "string",
+          "description": "Team name for outright mode when event is not supplied."
+        },
+        "consensus_probabilities": {
+          "type": "object",
+          "description": "Normalized consensus probabilities by outcome (caller override; else self-fetched devig average from multi-bookmaker h2h)."
+        },
+        "consensus_bands": {
+          "type": "object",
+          "description": "Optional uncertainty bands by outcome, each as [low, high]."
+        },
+        "market_quotes": {
+          "type": "array",
+          "description": "Executable quote or VWAP evidence by outcome (caller override; else self-fetched from the prediction-market order book)."
+        },
+        "rule_gate_pass": {
+          "type": "boolean",
+          "description": "Whether settlement scope has already passed rule comparison."
+        },
+        "target_size_usd": {
+          "type": "number",
+          "description": "Target executable size represented by the supplied quote evidence."
+        },
+        "carry_apr": {
+          "type": "number",
+          "description": "Annualized carry assumption for longer-dated markets."
+        },
+        "days_to_settlement": {
+          "type": "number",
+          "description": "Optional settlement horizon for carry adjustment."
+        }
+      }
+    },
+    "wc_capital_efficiency_theta": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "positions": {
+          "type": "array",
+          "description": "Optional list of position objects. If omitted, top-level fields are treated as one position.",
+          "items": {
+            "type": "object",
+            "description": "One caller-supplied World Cup prediction-market position row.",
+            "additionalProperties": true,
+            "properties": {
+              "team": {
+                "type": "string",
+                "description": "Team name for team-linked tournament markets."
+              },
+              "market_type": {
+                "type": "string",
+                "enum": [
+                  "champion",
+                  "reach_r16",
+                  "reach_qf",
+                  "reach_sf",
+                  "group_winner",
+                  "match_1x2"
+                ],
+                "description": "Supported market family for the row."
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Optional binary or match outcome label. Defaults to YES for table display."
+              },
+              "price": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "exclusiveMaximum": 1,
+                "description": "Caller-supplied probability price for this computation. Rows without price are blocked."
+              },
+              "size_usd": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "Premium at risk in USD. Rows without size_usd are blocked."
+              },
+              "held": {
+                "type": "boolean",
+                "description": "Whether the row is an existing position. Existing rows use a hold-value fee treatment."
+              }
+            }
+          }
+        },
+        "team": {
+          "type": "string",
+          "description": "Team for a single-position shorthand."
+        },
+        "market_type": {
+          "type": "string",
+          "enum": [
+            "champion",
+            "reach_r16",
+            "reach_qf",
+            "reach_sf",
+            "group_winner",
+            "match_1x2"
+          ],
+          "description": "Supported market family for a single-position shorthand."
+        },
+        "price": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1,
+          "description": "Caller-supplied probability price for a single-position shorthand. Required for a computable row in this package."
+        },
+        "size_usd": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Premium at risk in USD for a single-position shorthand. Required for a computable row in this package."
+        },
+        "held": {
+          "type": "boolean",
+          "description": "Whether the row represents an existing position rather than a new entry."
+        },
+        "benchmark_apy": {
+          "type": "number",
+          "description": "Annual benchmark rate used for excess APY. Defaults to 0.04 and is disclosed when defaulted."
+        },
+        "bankroll_usd": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Optional bankroll denominator for capital-share context."
+        },
+        "one_time_cost_usd": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Optional one-time cost included in the net APY calculation."
+        }
+      },
+      "required": []
+    },
+    "estimate_return_distribution_price_envelope": {
+      "type": "object",
+      "required": [
+        "symbol",
+        "horizon_days"
+      ],
+      "properties": {
+        "request_class": {
+          "type": "string",
+          "description": "Must be price_probability when supplied."
+        },
+        "symbol": {
+          "type": "string"
+        },
+        "horizon_days": {
+          "type": "integer"
+        },
+        "bands_pct": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "observations": {
+          "type": "object"
+        }
+      }
+    },
+    "price_probability_forecaster": {
+      "type": "object",
+      "required": [
+        "symbol",
+        "horizon_days"
+      ],
+      "properties": {
+        "request_class": {
+          "type": "string",
+          "description": "Must be price_probability when supplied."
+        },
+        "symbol": {
+          "type": "string",
+          "description": "Crypto asset symbol for the probability envelope."
+        },
+        "horizon_days": {
+          "type": "integer",
+          "description": "Forecast context horizon in calendar days; used only for probability framing, not a guaranteed target date."
+        },
+        "bands_pct": {
+          "type": "array",
+          "description": "Return-move bands in percent for scenario probability estimates.",
+          "items": {
+            "type": "number"
+          }
+        },
+        "observations": {
+          "type": "object",
+          "description": "Caller-supplied close observations for the symbol; expected rows include date and close values."
+        }
+      }
+    },
+    "wc_elo_fair_probability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "home",
+        "away"
+      ],
+      "properties": {
+        "home": {
+          "type": "string",
+          "description": "Home-side team name or supported alias."
+        },
+        "away": {
+          "type": "string",
+          "description": "Away-side team name or supported alias."
+        },
+        "stage": {
+          "type": "string",
+          "enum": [
+            "group",
+            "r32",
+            "r16",
+            "qf",
+            "sf",
+            "third_place",
+            "final"
+          ],
+          "description": "Match stage. Knockout stages add an advance probability."
+        },
+        "model": {
+          "type": "string",
+          "enum": [
+            "elo_empirical",
+            "dixon_coles"
+          ],
+          "description": "Probability model. Defaults to elo_empirical."
+        },
+        "pre_match_market_compare": {
+          "type": "boolean",
+          "description": "When true, compare against caller-supplied executable quotes. Defaults to true."
+        },
+        "market_quotes": {
+          "type": "array",
+          "description": "Optional rows for home_win, draw, and away_win with bid, ask, depth_bid_usd, and depth_ask_usd."
+        },
+        "pk_elo_adjust": {
+          "type": "boolean",
+          "description": "Optional knockout penalty adjustment, clamped to plus or minus five percentage points around 50 percent."
+        },
+        "fee_rate": {
+          "type": "number",
+          "description": "Optional taker fee rate as a decimal. Defaults to 0.03 when quote comparison is used."
+        },
+        "venue_country": {
+          "type": "string",
+          "description": "Optional venue country. Host advantage is applied only when a host team is confirmed at home."
+        }
+      }
+    },
+    "wc_group_live_qualification_repricer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "group": {
+          "type": "string",
+          "description": "Optional group label, such as A through L."
+        },
+        "score_observed_at": {
+          "type": "string",
+          "description": "Optional ISO timestamp for when the caller observed the live scores."
+        },
+        "match_states": {
+          "type": "array",
+          "description": "Required rows for one four-team group. Finished rows need a score; in-play rows need score and minute; not-started rows may include caller three-way probabilities.",
+          "items": {
+            "type": "object",
+            "description": "One group match state row with teams, status, score, minute, and optional probabilities.",
+            "additionalProperties": true,
+            "properties": {
+              "home": {
+                "type": "string",
+                "description": "Home team name for the group match row."
+              },
+              "away": {
+                "type": "string",
+                "description": "Away team name for the group match row."
+              },
+              "status": {
+                "type": "string",
+                "description": "Caller-supplied match status label.",
+                "enum": [
+                  "final",
+                  "finished",
+                  "in_play",
+                  "live",
+                  "upcoming",
+                  "not_started",
+                  "scheduled"
+                ]
+              },
+              "state": {
+                "type": "string",
+                "description": "Normalized match state used by the scenario grid.",
+                "enum": [
+                  "finished",
+                  "in_play",
+                  "not_started"
+                ]
+              },
+              "score": {
+                "oneOf": [
+                  {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "items": {
+                      "type": "integer"
+                    }
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "minute": {
+                "oneOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "probabilities": {
+                "type": "object",
+                "description": "Optional three-way probabilities for a not-started match row.",
+                "additionalProperties": false,
+                "properties": {
+                  "home_win": {
+                    "type": "number",
+                    "description": "Home-win probability between 0 and 1."
+                  },
+                  "draw": {
+                    "type": "number",
+                    "description": "Draw probability between 0 and 1."
+                  },
+                  "away_win": {
+                    "type": "number",
+                    "description": "Away-win probability between 0 and 1."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "market_prices": {
+          "type": "object",
+          "description": "Optional caller-supplied YES-price marks by team. Accepts either a flat team map or nested group_winner / reach_r16 maps."
+        },
+        "include_market_comparison": {
+          "type": "boolean",
+          "description": "Set false to skip the market comparison lane."
+        }
+      },
+      "required": [
+        "match_states"
+      ]
+    },
+    "wc_chain_consistency_scanner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "team": {
+          "type": "string",
+          "description": "Team name or short code for the chain scan. Required unless full_scan is true or chain_markets is supplied by the caller."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "chain_only",
+            "chain_plus_mutex",
+            "full_scan",
+            "full_scan_with_mutex"
+          ],
+          "description": "Scan mode. Defaults to chain_only."
+        },
+        "full_scan": {
+          "type": "boolean",
+          "description": "Explicitly request a wider team scan when live discovery assets are available."
+        },
+        "include_mutex_groups": {
+          "type": "boolean",
+          "description": "Include mutually exclusive basket checks when basket evidence is supplied."
+        },
+        "chain_markets": {
+          "type": "array",
+          "description": "Optional caller-supplied executable chain evidence with layer, bid, ask, depth, fee, and optional orderbook levels."
+        },
+        "mutex_baskets": {
+          "type": "array",
+          "description": "Optional caller-supplied mutually exclusive basket evidence for basket sum checks."
+        },
+        "elo_anchor": {
+          "type": "object",
+          "description": "Optional conditional probability anchor values keyed by conditional name or team."
+        },
+        "min_edge_cents": {
+          "type": "number",
+          "description": "Minimum gross edge in cents before a chain conflict is emitted."
+        },
+        "min_depth_usd": {
+          "type": "number",
+          "description": "Minimum available depth in USD for actionable tiering."
+        },
+        "include_diagnostics": {
+          "type": "boolean",
+          "description": "Include method thresholds and lane counters for review."
+        }
+      }
+    },
+    "wc_hold_vs_exit_ev": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "position": {
+          "type": "object",
+          "description": "Position object with team or market reference, side, shares, current_bid or bid_levels, quote/orderbook age or timestamp, optional p_adv_market, price_if_adv, expected_hold_days, avg_cost, and optional model_probability."
+        },
+        "timeline": {
+          "anyOf": [
+            {
+              "type": "array"
+            },
+            {
+              "type": "object"
+            }
+          ],
+          "description": "Optional catalyst timeline rows or expected-hold-days context relevant to the hold decision."
+        },
+        "token_id": {
+          "type": "string",
+          "description": "Optional public outcome token identifier used only for lightweight external quote validation; position-level token_id is also accepted."
+        },
+        "clob_token_id": {
+          "type": "string",
+          "description": "Optional alias for token_id used only for lightweight external quote validation."
+        },
+        "asset_id": {
+          "type": "string",
+          "description": "Optional alias for token_id used only for lightweight external quote validation."
+        }
+      },
+      "required": [
+        "position"
+      ]
+    },
+    "attribute_portfolio_pnl_drivers": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ledger": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "asset": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Asset symbol."
+              },
+              "venue": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Venue, wallet bucket, or reporting bucket."
+              },
+              "timestamp": {
+                "type": "string",
+                "minLength": 1,
+                "description": "ISO-8601 timestamp used for day-level grouping."
+              },
+              "pnl_usd": {
+                "type": "number",
+                "description": "Modeled PnL contribution in USD for the row."
+              }
+            },
+            "required": [
+              "asset",
+              "venue",
+              "timestamp",
+              "pnl_usd"
+            ],
+            "description": "Caller-supplied ledger object."
+          },
+          "description": "Caller-supplied list of ledger records."
+        },
+        "pnl_window": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "start": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Window start label or date."
+            },
+            "end": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Window end label or date."
+            }
+          },
+          "required": [
+            "start",
+            "end"
+          ],
+          "description": "Caller-supplied pnl window object."
+        },
+        "attribution_granularity": {
+          "type": "string",
+          "enum": [
+            "asset",
+            "venue",
+            "day"
+          ],
+          "description": "Grouping dimension used for the attribution result."
+        }
+      },
+      "required": [
+        "ledger",
+        "pnl_window",
+        "attribution_granularity"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "rank_portfolio_pnl_driver_buckets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ledger": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "asset": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Asset symbol."
+              },
+              "venue": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Venue, wallet bucket, or reporting bucket."
+              },
+              "timestamp": {
+                "type": "string",
+                "minLength": 1,
+                "description": "ISO-8601 timestamp used for day-level grouping."
+              },
+              "pnl_usd": {
+                "type": "number",
+                "description": "Modeled PnL contribution in USD for the row."
+              }
+            },
+            "required": [
+              "asset",
+              "venue",
+              "timestamp",
+              "pnl_usd"
+            ],
+            "description": "Caller-supplied ledger object."
+          },
+          "description": "Caller-supplied list of ledger records."
+        },
+        "pnl_window": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "start": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Window start label or date."
+            },
+            "end": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Window end label or date."
+            }
+          },
+          "required": [
+            "start",
+            "end"
+          ],
+          "description": "Caller-supplied pnl window object."
+        },
+        "attribution_granularity": {
+          "type": "string",
+          "enum": [
+            "asset",
+            "venue",
+            "day"
+          ],
+          "description": "Grouping dimension used for the attribution result."
+        }
+      },
+      "required": [
+        "ledger",
+        "pnl_window",
+        "attribution_granularity"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "map_portfolio_concentration_buckets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "holdings": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "asset": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Asset symbol or token name."
+              },
+              "value_usd": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Current modeled USD value for the holding row."
+              },
+              "chain": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Associated chain or settlement network."
+              },
+              "venue": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Venue, wallet bucket, or custody location."
+              },
+              "strategy": {
+                "type": "string",
+                "description": "Optional strategy label used for concentration grouping."
+              },
+              "direction": {
+                "type": "string",
+                "enum": [
+                  "long",
+                  "short",
+                  "cash",
+                  "neutral"
+                ],
+                "description": "Optional exposure direction label."
+              }
+            },
+            "required": [
+              "asset",
+              "value_usd",
+              "chain",
+              "venue"
+            ],
+            "description": "Caller-supplied holding object."
+          },
+          "description": "Caller-supplied list of holding records."
+        },
+        "live_fetch": {
+          "type": "boolean",
+          "description": "Optional request for approved public market context when runtime access is available; concentration math still depends on caller-supplied holdings."
+        }
+      },
+      "required": [
+        "holdings"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "analyze_portfolio_exposure_map": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "holdings": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "asset": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Asset symbol or token name."
+              },
+              "value_usd": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Current modeled USD value for the holding row."
+              },
+              "chain": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Associated chain or settlement network."
+              },
+              "venue": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Venue, wallet bucket, or custody location."
+              },
+              "strategy": {
+                "type": "string",
+                "description": "Optional strategy label used for concentration grouping."
+              },
+              "direction": {
+                "type": "string",
+                "enum": [
+                  "long",
+                  "short",
+                  "cash",
+                  "neutral"
+                ],
+                "description": "Optional exposure direction label."
+              }
+            },
+            "required": [
+              "asset",
+              "value_usd",
+              "chain",
+              "venue"
+            ],
+            "description": "Caller-supplied holding object."
+          },
+          "description": "Caller-supplied list of holding records."
+        },
+        "venue_mapping": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Caller-supplied venue normalization or bucket mapping object."
+        },
+        "strategy_tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Optional strategy tag provided by the caller."
+          },
+          "description": "Caller-supplied list of strategy tag records."
+        }
+      },
+      "required": [
+        "holdings",
+        "venue_mapping"
+      ],
+      "description": "Caller-supplied input schema object."
+    },
+    "rank_yield_pool_decay_risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "description": "Optional case-insensitive filter matched against pool project, chain, or symbol; use all for the full yield-pool universe.",
+          "type": "string",
+          "default": "all"
+        },
+        "top_n": {
+          "description": "Number of ranked pools to return, from 1 to 20.",
+          "type": "integer",
+          "default": 5
+        }
+      },
+      "required": []
+    },
+    "rank_institutional_treasury_flow_signals": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "request_class"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "request_class",
+            "institutions"
+          ]
+        },
+        {
+          "required": [
+            "request_class",
+            "live_fetch"
+          ]
+        }
+      ],
+      "properties": {
+        "request_class": {
+          "type": "string",
+          "enum": [
+            "rank_institutional_treasury_flow_signals"
+          ],
+          "description": "Exact supported request class for this treasury-flow monitor."
+        },
+        "institutions": {
+          "type": "array",
+          "description": "Compact institutional treasury rows required unless live_fetch is true. Each row needs name, holdings_usd, and change_30d_units; asset, symbol, and holdings_units improve readability.",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "name",
+              "holdings_usd",
+              "change_30d_units"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Institution or public treasury holder name."
+              },
+              "symbol": {
+                "type": "string",
+                "description": "Optional public equity or holder symbol."
+              },
+              "asset": {
+                "type": "string",
+                "description": "Digital asset tracked by the treasury row, such as BTC."
+              },
+              "holdings_usd": {
+                "type": "number",
+                "description": "Current holdings value in USD."
+              },
+              "holdings_units": {
+                "type": "number",
+                "description": "Current holdings in asset units."
+              },
+              "change_30d_units": {
+                "type": "number",
+                "description": "Recent unit change used to classify accumulation, reduction, or unchanged flow."
+              }
+            }
+          }
+        },
+        "treasuries": {
+          "type": "array",
+          "description": "Optional compact protocol treasury rows with protocol, treasury_usd, and stable_usd."
+        },
+        "thresholds": {
+          "type": "object",
+          "description": "Optional filters, including min_holdings_usd and material_change_units."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Maximum number of rows returned in each ranked section."
+        },
+        "live_fetch": {
+          "type": "boolean",
+          "const": true,
+          "description": "Optional request for a public treasury snapshot when caller-supplied rows are not provided; unavailable required observations return DATA_UNAVAILABLE."
+        }
+      }
+    },
+    "review_dex_wallet_pnl": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "wallet_address": {
+          "type": "string"
+        },
+        "chain": {
+          "type": "string"
+        },
+        "window": {
+          "type": "string",
+          "enum": [
+            "7d",
+            "30d",
+            "90d"
+          ]
+        },
+        "caller_evidence": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Optional caller-supplied compact wallet PnL evidence for environments where live wallet lanes are unavailable."
+        }
+      },
+      "required": [
+        "wallet_address"
+      ]
+    },
+    "rank_treasury_token_concentration_risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "description": "Public protocol slug to evaluate, such as aave."
+        },
+        "top_n": {
+          "type": "integer",
+          "description": "Maximum token concentration rows to return when the data lane is available, from 1 to 20.",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 20
+        }
+      },
+      "required": [
+        "protocol"
+      ]
+    },
+    "rank_short_squeeze_fuel_candidates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "universe": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "BTC",
+            "ETH",
+            "SOL",
+            "LINK",
+            "SUI",
+            "AVAX",
+            "DOGE",
+            "ADA"
+          ],
+          "description": "Symbols to rank after normalization."
+        },
+        "venue": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "Binance",
+            "OKX",
+            "Bybit"
+          ],
+          "description": "Venue labels used to select aggregate perpetual context."
+        },
+        "top_n": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 25,
+          "description": "Maximum number of ranked candidates to return."
+        }
+      },
+      "required": []
+    },
+    "review_mean_reversion_setup": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string"
+        },
+        "timeframe": {
+          "type": "string",
+          "enum": [
+            "1h",
+            "4h",
+            "1d"
+          ]
+        }
+      },
+      "required": [
+        "symbol"
+      ]
+    },
+    "review_support_resistance_confluence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "token_id_or_symbol": {
+          "type": "string",
+          "description": "Asset symbol or numeric asset id to review."
+        },
+        "timeframe": {
+          "type": "string",
+          "enum": [
+            "1h",
+            "4h",
+            "1d"
+          ],
+          "description": "Primary candle interval. The skill pairs it with the next higher structure window for confluence."
+        }
+      },
+      "required": [
+        "token_id_or_symbol"
+      ]
+    },
+    "review_token_supply_overhang": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "token_id_or_symbol": {
+          "type": "string"
+        },
+        "horizon": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "token_id_or_symbol"
+      ]
+    },
+    "onchain_token_scanner": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_gain_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "default": 300,
+          "description": "Minimum historical signal gain requested by the caller."
+        },
+        "top_n_deep_dive": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2,
+          "default": 2,
+          "description": "Number of candidate tokens requested for deeper review. The runtime budget caps this at 2."
+        }
+      },
+      "required": [
+        "top_n_deep_dive"
+      ]
+    },
+    "screen_perp_accumulation_candidates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "universe": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "BTC",
+            "ETH",
+            "SOL",
+            "LINK",
+            "SUI",
+            "AVAX",
+            "DOGE",
+            "ADA"
+          ],
+          "description": "Symbols to screen after normalization."
+        },
+        "venue": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "Binance",
+            "OKX",
+            "Bybit"
+          ],
+          "description": "Venue labels used to select aggregate perpetual context."
+        },
+        "lookback_days": {
+          "type": "integer",
+          "default": 14,
+          "minimum": 2,
+          "maximum": 90,
+          "description": "Recent lookback window used to build the setup read."
+        },
+        "top_n": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 25,
+          "description": "Maximum number of ranked candidates to return."
+        }
+      },
+      "required": []
+    },
+    "screen_sideways_low_volume_perp_candidates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "universe": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "BTC",
+            "ETH",
+            "SOL",
+            "LINK",
+            "SUI",
+            "AVAX",
+            "DOGE",
+            "ADA"
+          ],
+          "description": "Symbols to screen after normalization."
+        },
+        "venue": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "Binance",
+            "OKX",
+            "Bybit"
+          ],
+          "description": "Venue labels used to select aggregate perpetual context."
+        },
+        "lookback_days": {
+          "type": "integer",
+          "default": 14,
+          "minimum": 2,
+          "maximum": 90,
+          "description": "Recent lookback window used to build the setup read."
+        },
+        "top_n": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 25,
+          "description": "Maximum number of ranked candidates to return."
+        }
+      },
+      "required": []
+    },
+    "summarize_x_social_market_signals": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "request_class"
+      ],
+      "properties": {
+        "request_class": {
+          "type": "string",
+          "description": "Supported request class for this monitor."
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Maximum number of capped rows returned in each ranked section."
+        }
+      }
+    },
+    "x_social_signal_monitor": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "request_class"
+      ],
+      "properties": {
+        "request_class": {
+          "type": "string",
+          "description": "Supported request class for this monitor."
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Maximum number of capped rows returned in each ranked section."
+        },
+        "allowed_x_handles": {
+          "type": "array",
+          "description": "Optional X handles that constrain live x_search to specific public accounts.",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "track_social_price_divergence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "query": {
+          "description": "Public social topic or search phrase to compare with market movement.",
+          "type": "string",
+          "default": "BTC OR Bitcoin"
+        },
+        "symbol": {
+          "description": "Crypto asset symbol for the market side of the divergence check.",
+          "type": "string",
+          "default": "BTC"
+        },
+        "lookback_hours": {
+          "description": "Lookback window in hours, from 1 to 168; defaults to 24.",
+          "type": "integer",
+          "default": 24
+        },
+        "max_posts": {
+          "description": "Maximum content-search request limit, from 1 to 10; defaults to 10.",
+          "type": "integer",
+          "default": 10
+        }
+      },
+      "required": [
+        "query",
+        "symbol"
+      ]
+    },
+    "verify_new_token_safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "token_id_or_symbol": {
+          "type": "string"
+        },
+        "platform": {
+          "type": "string"
+        },
+        "contract_address": {
+          "type": "string"
+        },
+        "caller_evidence": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Optional caller-supplied compact token safety evidence for environments where live safety lanes are unavailable."
+        }
+      },
+      "required": [
+        "token_id_or_symbol",
+        "platform",
+        "contract_address"
+      ]
+    },
+    "verify_social_claim_with_market_data": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "claim": {
+          "description": "Public market claim to test, such as a claim that BTC momentum is accelerating while liquidity improves.",
+          "type": "string"
+        },
+        "symbol": {
+          "description": "Crypto asset symbol to compare against market context, such as BTC.",
+          "type": "string"
+        },
+        "query": {
+          "description": "Optional public-discussion query terms. Defaults to the symbol and claim keywords when omitted.",
+          "type": "string",
+          "default": ""
+        },
+        "lookback_hours": {
+          "description": "Recent public-discussion window in hours. Defaults to 24 and must be between 1 and 168.",
+          "type": "integer",
+          "default": 24
+        },
+        "max_posts": {
+          "description": "Maximum public-discussion items to summarize. Defaults to 25 and is capped at 100.",
+          "type": "integer",
+          "default": 25
+        }
+      },
+      "required": [
+        "claim",
+        "symbol"
+      ]
+    }
+  },
+  "extra": [
+    "altcoin_deep_research",
+    "altcoin_official_dynamics",
+    "altcoin_scanner_perp",
+    "altcoin_sector_analysis",
+    "altcoin_token_profile",
+    "analyze_cross_asset_performance_divergence",
+    "analyze_hyperliquid_whale_positioning",
+    "analyze_portfolio_exposure_map",
+    "assess_exchange_market_structure_pressure",
+    "assess_fork_competition_pressure",
+    "assess_stablecoin_bridge_flow_concentration",
+    "assess_tvl_quality_and_composition",
+    "assess_withdrawal_network_choice",
+    "attribute_portfolio_pnl_drivers",
+    "btc_cross_asset_correlation",
+    "build_exchange_transfer_guide",
+    "build_protocol_risk_memo",
+    "build_regime_aware_allocation",
+    "classify_kline_pattern_quality",
+    "compare_cross_venue_true_cost",
+    "compare_protocol_fee_quality",
+    "compare_protocol_public_financial_quality",
+    "compare_protocol_treasury_reserves",
+    "compare_same_class_venue_true_cost",
+    "construct_delta_neutral_strategy",
+    "crypto_macro_overview",
+    "decode_macro_event_impact",
+    "detect_accumulation_breakout_transition",
+    "detect_borrow_market_stress",
+    "detect_event_social_propagation_risk",
+    "detect_kol_consensus_reversal",
+    "detect_oi_dark_flow_setup",
+    "estimate_return_distribution_price_envelope",
+    "kline_pattern_recognition",
+    "map_portfolio_concentration_buckets",
+    "monitor_market_sentiment_shift",
+    "onchain_token_scanner",
+    "perp_contract_analysis",
+    "perp_scanner_candidates",
+    "portfolio_analysis",
+    "rank_cvd_divergence_candidates",
+    "rank_institutional_treasury_flow_signals",
+    "rank_oi_dark_flow_candidates",
+    "rank_treasury_token_concentration_risk",
+    "rank_yield_pool_decay_risk",
+    "reconcile_multi_venue_bookkeeping",
+    "review_dex_wallet_pnl",
+    "review_hyperliquid_wallet_risk_posture",
+    "review_perp_orderbook_pressure",
+    "scan_spot_altcoin_breakout_with_social_confirmation",
+    "screen_perp_breakout_candidates",
+    "screen_sideways_low_volume_perp_candidates",
+    "stablecoin_and_bridge_flow_monitor",
+    "wc_capital_efficiency_theta",
+    "wc_chain_consistency_scanner",
+    "wc_elo_fair_probability",
+    "wc_group_live_qualification_repricer",
+    "wc_hold_vs_exit_ev",
+    "wc_relative_pricing_scanner",
+    "x_social_signal_monitor"
+  ]
+}

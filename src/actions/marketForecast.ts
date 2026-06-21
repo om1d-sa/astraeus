@@ -20,6 +20,7 @@ import {
   runSkillBundle,
   skillList,
   synthesizeSkillSentiment,
+  showRawSkillBundle,
   DEFAULT_MARKET_SKILLS,
 } from "../skills/options-forecast/skill-bundle";
 
@@ -219,12 +220,10 @@ export const marketForecastAction: Action = {
       const skillCtx = await runSkillBundle(
         runtime,
         skillList("MARKET_SKILLS", DEFAULT_MARKET_SKILLS),
-        { preview: true, lookback_days: 30 },
-        {
-          // Per-symbol skills run across the majors; ETF-flow comparison defaults to BTC/ETH.
-          symbols: ASSETS,
-          perSkillParams: { compare_etf_flow_quality: { assets: ["BTC", "ETH"] } },
-        },
+        {},
+        // Per-symbol skills fan across the majors; each skill's exact params (preview,
+        // lookback, assets, …) are built per-schema by SKILL_SPECS.
+        { symbols: ASSETS },
       );
       const synth = skillCtx
         ? await synthesizeSkillSentiment(
@@ -290,8 +289,9 @@ export const marketForecastAction: Action = {
       // CMC skill read — the LLM-synthesized signal that MOVED the score above (not a raw
       // dump). Falls back to the raw bundle only if synthesis failed.
       if (synth)
-        responseText += `\n• CMC skill read (${synth.sentiment >= 0 ? "+" : ""}${synth.sentiment.toFixed(2)}, ${Math.round(skillW * 100)}% weight): ${synth.summary}`;
-      else if (skillCtx) responseText += `\n\n${skillCtx}`;
+        responseText += `\n• CMC skill read (${synth.sentiment >= 0 ? "+" : ""}${synth.sentiment.toFixed(2)}): ${synth.summary}`;
+      else if (skillCtx && showRawSkillBundle())
+        responseText += `\n\n${skillCtx}`;
 
       await callback?.({ text: responseText, actions: ["MARKET_FORECAST"] });
       return {

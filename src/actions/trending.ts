@@ -12,6 +12,7 @@ import {
   runSkillBundle,
   skillList,
   synthesizeSkillSentiment,
+  showRawSkillBundle,
   DEFAULT_TRENDING_SKILLS,
 } from "../skills/options-forecast/skill-bundle";
 
@@ -70,7 +71,9 @@ export const trendingAction: Action = {
       const skillCtx = await runSkillBundle(
         runtime,
         skillList("TRENDING_SKILLS", DEFAULT_TRENDING_SKILLS),
-        { preview: true },
+        {},
+        // Per-symbol perp/structure skills fan across the majors for a market-wide read.
+        { symbols: ["BTC", "ETH", "BNB"] },
       );
       if (skillCtx) {
         const synth = await synthesizeSkillSentiment(
@@ -78,9 +81,9 @@ export const trendingAction: Action = {
           skillCtx,
           "trending crypto tokens",
         );
-        text += synth
-          ? `\n\n📊 CMC skill read (${synth.sentiment >= 0 ? "+" : ""}${synth.sentiment.toFixed(2)}): ${synth.summary}`
-          : `\n\n${skillCtx}`;
+        if (synth)
+          text += `\n\n📊 CMC skill read (${synth.sentiment >= 0 ? "+" : ""}${synth.sentiment.toFixed(2)}): ${synth.summary}`;
+        else if (showRawSkillBundle()) text += `\n\n${skillCtx}`;
       }
       await callback?.({ text, actions: ["TRENDING"] });
       return {

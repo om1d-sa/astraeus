@@ -9,11 +9,18 @@
  * Skill lists are overridable via env (MARKET_SKILLS / TRENDING_SKILLS / RESEARCH_SKILLS,
  * comma-separated unique_names); otherwise the DEFAULT_* lists below are used.
  *
- * NOTE: each skill has its own input schema. The runner passes one shared `params`
- * object; skills whose required inputs aren't satisfied simply error and are skipped.
+ * Each skill has its OWN input schema (almost all `additionalProperties:false`), so the
+ * runner builds schema-exact params PER SKILL via SKILL_SPECS (see skill-schemas.ts)
+ * rather than passing one shared bag — that shared bag, leaking extra props into strict
+ * schemas and never supplying required ones, is what made most skills fail.
  */
 import { type IAgentRuntime, logger, ModelType } from "@elizaos/core";
 import { McpService } from "@elizaos/plugin-mcp";
+import {
+  buildSkillJobs,
+  type SkillCtx,
+  type SkillJob,
+} from "./skill-schemas";
 
 const CMC_SERVER = "cmc-skill-hub";
 
@@ -45,6 +52,20 @@ function raceTimeout<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
 /** Whether the (slow) CMC skill bundles are enabled. OFF by default. */
 export function skillsEnabled(): boolean {
   return (process.env.CMC_SKILLS_ENABLED ?? "false").toLowerCase() === "true";
+}
+
+/**
+ * Whether to show the raw "CMC SKILL ANALYSES" bundle dump in user-facing replies
+ * when LLM synthesis is unavailable. OFF by default — the raw dump is noisy; the
+ * synthesized one-line "CMC skill read" is the intended signal. The bundle still
+ * feeds the score regardless. Set CMC_SKILLS_SHOW_RAW=true to restore the dump.
+ *
+ * Only governs the fallback dump in forecast-style replies (MARKET/RESEARCH/
+ * TRENDING); LIQUIDATION/PORTFOLIO render the bundle as their whole output and
+ * are unaffected.
+ */
+export function showRawSkillBundle(): boolean {
+  return (process.env.CMC_SKILLS_SHOW_RAW ?? "false").toLowerCase() === "true";
 }
 
 const hasContent = (v: unknown): boolean =>
@@ -94,25 +115,6 @@ export function skillList(envKey: string, fallback: string[]): string[] {
     : fallback;
 }
 
-/**
- * CMC skills that require a single `symbol` input. When a caller passes
- * `opts.symbols`, these are fanned out — one execute_skill call per symbol — so a
- * market-wide feature can cover several assets (e.g. BTC/ETH/BNB) at once.
- */
-export const SYMBOL_SKILLS = new Set<string>([
-  "detect_funding_rate_regime_shift",
-  "review_mean_reversion_setup",
-  "detect_perp_bull_bear_divergence",
-  "review_etf_flow_vs_perp_sentiment",
-  "exchange_market_structure_monitor",
-  "detect_perp_momentum_exhaustion",
-]);
-
-type SkillJob = {
-  name: string;
-  label: string;
-  params: Record<string, unknown>;
-};
 
 /** Flatten an execute_skill MCP response to its text payload. */
 const skillResultText = (r: { content?: Array<{ text?: string }> }): string =>
@@ -245,10 +247,36 @@ Respond with ONLY this JSON, nothing else:
   }
 }
 
+/** Translate the legacy (params, opts) call shape into a {@link SkillCtx}. */
+function toCtx(
+  params: Record<string, unknown>,
+  opts: { symbols?: string[] },
+): SkillCtx {
+  const rawHoldings = (params.holdings ?? params.portfolio) as unknown;
+  const holdings = Array.isArray(rawHoldings)
+    ? (rawHoldings as Array<Record<string, unknown>>)
+        .map((h) => ({
+          symbol: String(h.symbol ?? ""),
+          pct: Number(h.pct ?? h.weight_pct ?? 0),
+          valueUsd:
+            typeof h.valueUsd === "number" ? h.valueUsd : undefined,
+        }))
+        .filter((h) => h.symbol)
+    : undefined;
+  return {
+    symbol: typeof params.symbol === "string" ? params.symbol : undefined,
+    symbols: opts.symbols,
+    holdings: holdings?.length ? holdings : undefined,
+    contractToken:
+      (params.contractToken as SkillCtx["contractToken"]) || undefined,
+  };
+}
+
 /**
- * Expand a flat skill-name list into concrete execute_skill jobs: SYMBOL_SKILLS fan
- * across `opts.symbols` (one call each, `symbol` merged in), everything else runs once
- * with the shared (+ per-skill) params. Shared by {@link runSkillBundle} and
+ * Expand a skill-name list into concrete execute_skill jobs. Delegates to
+ * {@link buildSkillJobs}: each known skill gets schema-exact params from SKILL_SPECS
+ * (fan skills run once per symbol); unknown names (e.g. test fixtures) fall back to the
+ * legacy shared-params + per-skill merge. Shared by {@link runSkillBundle} and
  * {@link probeSkillBundle} so both build identical jobs.
  */
 function buildJobs(
@@ -259,21 +287,12 @@ function buildJobs(
     perSkillParams?: Record<string, Record<string, unknown>>;
   },
 ): SkillJob[] {
-  const jobs: SkillJob[] = [];
-  for (const name of uniqueNames) {
-    const merged = { ...params, ...(opts.perSkillParams?.[name] ?? {}) };
-    if (opts.symbols?.length && SYMBOL_SKILLS.has(name)) {
-      for (const symbol of opts.symbols)
-        jobs.push({
-          name,
-          label: `${name}:${symbol}`,
-          params: { ...merged, symbol },
-        });
-    } else {
-      jobs.push({ name, label: name, params: merged });
-    }
-  }
-  return jobs;
+  const ctx = toCtx(params, opts);
+  const legacy = (name: string): Record<string, unknown> => ({
+    ...params,
+    ...(opts.perSkillParams?.[name] ?? {}),
+  });
+  return buildSkillJobs(uniqueNames, ctx, legacy);
 }
 
 /**
@@ -341,14 +360,16 @@ export async function runSkillBundle(
 }
 
 // ---- Default skill bundles per feature (override via env) ----
+//
+// Every skill below has an entry in SKILL_SPECS (skill-schemas.ts) that builds its exact
+// schema params. Per-symbol skills are fanned across the majors (BTC/ETH/BNB) by the
+// caller's `symbols`. Skills that fundamentally need user-specific structured input the
+// feature can't supply — live options Greeks, a perp position snapshot, a trade ledger,
+// fabricated unlock rows, or a down social surface — are deliberately NOT listed (they
+// would only ever return INVALID_ARGUMENT / DATA_UNAVAILABLE here).
 
-// MARKET overview is an OVERALL-MARKET read. Market-wide skills run on the shared
-// params ({ preview, lookback_days }). Per-symbol skills (SYMBOL_SKILLS) are fanned
-// across the majors (BTC/ETH/BNB) and `compare_etf_flow_quality` defaults to
-// assets BTC/ETH — both configured by the MARKET caller. Skills that must be pinned
-// to a specific event/allocation/treasury request (event / event_query /
-// request_class / current_allocation) stay excluded — those belong to the
-// event-, portfolio- and treasury-specific features.
+// MARKET overview is an OVERALL-MARKET read across macro, ETF, liquidity, sector and
+// per-symbol perp lanes; per-symbol skills fan across BTC/ETH/BNB.
 export const DEFAULT_MARKET_SKILLS = [
   "daily_market_overview",
   "btc_etf_institutional_demand",
@@ -359,7 +380,8 @@ export const DEFAULT_MARKET_SKILLS = [
   "screen_perp_accumulation_candidates",
   "detect_market_regime",
   "assess_macro_liquidity_risk_regime",
-  "analyze_cross_asset_risk_regime",
+  // analyze_cross_asset_risk_regime excluded — its cross-asset (equities/gold/DXY) data
+  // surface isn't derivable on this API plan, so it always returns DATA_GAPS.
   "rank_short_squeeze_fuel_candidates",
   "detect_etf_flow_price_absorption",
   "analyze_btc_eth_etf_flow_impact",
@@ -377,18 +399,17 @@ export const DEFAULT_MARKET_SKILLS = [
   "detect_perp_momentum_exhaustion",
 ];
 
+// TRENDING is a discovery read — scanners + per-symbol perp structure fanned across the
+// majors. Single-token/contract skills (token safety, holder concentration) need a
+// specific token+contract and live in RESEARCH instead.
 export const DEFAULT_TRENDING_SKILLS = [
   "altcoin_breakout_scanner_spot",
   "screen_perp_accumulation_candidates",
   "analyze_open_interest_price_divergence",
-  "verify_new_token_safety",
   "assess_volatility_expansion_risk",
   "monitor_whale_transfer_anomalies",
-  "calculate_atr_trade_risk_levels",
-  "design_atr_based_trade_risk_plan",
   "analyze_perp_trend_structure",
   "screen_spot_breakout_candidates",
-  "score_holder_concentration_risk",
   "track_narrative_rotation",
   "rank_perp_altcoin_anomaly_setups",
   "compare_sector_relative_strength",
@@ -396,13 +417,11 @@ export const DEFAULT_TRENDING_SKILLS = [
   "build_indicator_trade_watchlist",
   "detect_perp_bull_bear_divergence",
   "compare_sector_strength",
-  "summarize_x_social_market_signals",
-  "token_holder_and_dex_flow_monitor",
   "detect_perp_momentum_exhaustion",
-  "token_unlock_pressure_monitor",
-  "review_token_supply_overhang",
 ];
 
+// RESEARCH is single-token due diligence: per-symbol/per-token skills run on the
+// researched asset (contract-scoped ones use the RESEARCH-resolved on-chain contract).
 export const DEFAULT_RESEARCH_SKILLS = [
   "analyze_token_unlock_impact",
   "rank_liquidation_magnet_levels",
@@ -410,14 +429,10 @@ export const DEFAULT_RESEARCH_SKILLS = [
   "build_altcoin_market_context_profile",
   "assess_altcoin_sector_relative_position",
   "analyze_multi_timeframe_trend_alignment",
-  "monitor_perp_position_risk",
   "assess_altcoin_kol_consensus_with_identity_resolution",
   "monitor_whale_transfer_anomalies",
   "compare_token_unlock_risk_bucket",
-  "assess_token_holder_dex_flow_quality",
   "review_support_resistance_confluence",
-  "calculate_atr_trade_risk_levels",
-  "design_atr_based_trade_risk_plan",
   "assess_altcoin_asset_structure",
   "detect_spot_perp_flow_divergence",
   "verify_social_claim_with_market_data",
@@ -428,18 +443,14 @@ export const DEFAULT_RESEARCH_SKILLS = [
   "detect_leverage_reset_completion",
   "assess_unlock_absorption_capacity",
   "detect_holder_distribution_trend",
-  "assess_pullback_entry_quality",
   "cross_asset_market_charting",
   "review_mean_reversion_setup",
   "track_social_price_divergence",
   "track_exchange_inflow_outflow_pressure",
   "detect_perp_bull_bear_divergence",
   "compare_sector_strength",
-  "summarize_x_social_market_signals",
-  "token_holder_and_dex_flow_monitor",
-  "detect_perp_momentum_exhaustion",
-  "token_unlock_pressure_monitor",
-  "review_token_supply_overhang",
+  // review_token_supply_overhang excluded — its market-evidence lane is unavailable on
+  // this plan for every token tried (ETH, ARB, OP, slug); covered by the unlock skills above.
 ];
 
 /** ETF-flow skills for the BTC/ETH forecast (20% leg). Not used for BNB. */
@@ -451,20 +462,25 @@ export const DEFAULT_ETF_SKILLS = [
   "review_etf_flow_vs_perp_sentiment",
 ];
 
-/** Portfolio-risk analysis skills (PORTFOLIO_ANALYSIS feature). */
+/**
+ * Portfolio-risk analysis skills (PORTFOLIO_ANALYSIS feature). These all run off the
+ * user's parsed spot holdings (synthesized into each skill's schema by SKILL_SPECS).
+ * Options-Greek / derivatives / PnL-ledger skills are excluded — a spot %-portfolio
+ * has no options positions, perp legs, or trade ledger to feed them.
+ */
 export const DEFAULT_PORTFOLIO_SKILLS = [
+  "portfolio_analysis",
+  "build_regime_aware_allocation",
   "build_rebalance_plan",
   "build_portfolio_rebalance_plan",
-  "build_derivatives_risk_memo",
-  "aggregate_options_portfolio_greek_exposure",
-  "review_options_portfolio_greeks",
-  "rank_portfolio_pnl_driver_buckets",
-  "build_options_rollover_plan",
 ];
 
-/** Liquidation-cascade analysis skills (LIQUIDATION_ANALYSIS feature). */
+/**
+ * Liquidation-cascade analysis skills (LIQUIDATION_ANALYSIS feature). Per-symbol skills
+ * fan across the majors. `calculate_perp_position_liquidation_buffer` is excluded — it
+ * needs a live perp position snapshot the market-wide read doesn't have.
+ */
 export const DEFAULT_LIQUIDATION_SKILLS = [
-  "calculate_perp_position_liquidation_buffer",
   "assess_liquidation_cascade_risk",
   "rank_short_squeeze_fuel_candidates",
   "detect_liquidation_cluster_risk",
@@ -494,50 +510,47 @@ export interface BundleSpec {
 /**
  * Every CMC skill bundle the agent uses, in report order. The single source of truth
  * the debug report iterates over; `skillList(envKey, defaults)` resolves the live list.
- * The params mirror each feature's real {@link runSkillBundle} call site.
+ * The params/symbols mirror each feature's real {@link runSkillBundle} call site so the
+ * debug probe builds the exact same per-skill jobs as production.
  */
 export const SKILL_BUNDLES: readonly BundleSpec[] = [
   {
     feature: "Overall market",
     envKey: "MARKET_SKILLS",
     defaults: DEFAULT_MARKET_SKILLS,
-    params: { preview: true, lookback_days: 30 },
     symbols: ["BTC", "ETH", "BNB"],
-    perSkillParams: { compare_etf_flow_quality: { assets: ["BTC", "ETH"] } },
   },
   {
     feature: "Trending cryptos",
     envKey: "TRENDING_SKILLS",
     defaults: DEFAULT_TRENDING_SKILLS,
-    params: { preview: true },
+    symbols: ["BTC", "ETH", "BNB"],
   },
   {
     feature: "Crypto research",
     envKey: "RESEARCH_SKILLS",
     defaults: DEFAULT_RESEARCH_SKILLS,
-    params: { symbol: "ETH" },
+    // A liquid altcoin (perps + sector tags) is representative — altcoin-scoped skills
+    // (e.g. sector relative position) can't classify a base layer like ETH.
+    params: { symbol: "SOL" },
   },
   {
     feature: "Portfolio analysis",
     envKey: "PORTFOLIO_SKILLS",
     defaults: DEFAULT_PORTFOLIO_SKILLS,
     params: {
-      portfolio: [
-        { symbol: "BTC", pct: 50 },
-        { symbol: "ETH", pct: 50 },
-      ],
       holdings: [
         { symbol: "BTC", pct: 50 },
-        { symbol: "ETH", pct: 50 },
+        { symbol: "ETH", pct: 30 },
+        { symbol: "USDT", pct: 20 },
       ],
-      focus: "risk_reduction",
     },
   },
   {
     feature: "Liquidation analysis",
     envKey: "LIQUIDATION_SKILLS",
     defaults: DEFAULT_LIQUIDATION_SKILLS,
-    params: { preview: true },
+    symbols: ["BTC", "ETH", "BNB"],
   },
   {
     feature: "Forecast ETF leg",

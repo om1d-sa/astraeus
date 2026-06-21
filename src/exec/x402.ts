@@ -47,6 +47,13 @@ export async function quoteX402(
  * Make an x402-gated request, auto-approving payment up to `maxPaymentAtomic`
  * (atomic units, e.g. "10000" = 0.01 USDC at 6dp). Defaults to X402_MAX_PAYMENT
  * or a conservative cap.
+ *
+ * Network selection matters: CMC's x402 endpoints advertise their *preferred*
+ * route as a stablecoin on BSC priced in 18 decimals (0.01 = 1e16 atomic), which
+ * blows past the 6-dp `--max-payment 10000` cap with PAYMENT_AMOUNT_EXCEEDED.
+ * We pin the route to Base by default (X402_PREFER_NETWORK, default "base"),
+ * where the same call is 10000 atomic of USDC (6dp) — within the cap and the chain
+ * the agent wallet actually holds USDC on. Pass preferNetwork: "" to let TWAK choose.
  */
 export async function requestX402(
   url: string,
@@ -60,6 +67,8 @@ export async function requestX402(
 ): Promise<X402Result> {
   const maxPayment =
     opts.maxPaymentAtomic ?? process.env.X402_MAX_PAYMENT ?? "10000";
+  const preferNetwork =
+    opts.preferNetwork ?? process.env.X402_PREFER_NETWORK ?? "base";
   const args = [
     "x402",
     "request",
@@ -70,7 +79,7 @@ export async function requestX402(
     "--json",
   ];
   if (opts.method) args.push("--method", opts.method);
-  if (opts.preferNetwork) args.push("--prefer-network", opts.preferNetwork);
+  if (preferNetwork) args.push("--prefer-network", preferNetwork);
   const { json, raw } = await runTwak(args, {
     timeoutMs: opts.timeoutMs ?? 180_000,
   });
