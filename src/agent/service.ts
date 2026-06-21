@@ -7,6 +7,7 @@ import { TwakExecutor } from "../exec/twak";
 import type { Executor, Portfolio } from "../exec/types";
 import {
   generateForecast,
+  type Asset,
   type ForecastTimeframe,
   type PriceForecast,
 } from "../skills/options-forecast";
@@ -20,6 +21,62 @@ const num = (key: string, fallback: number): number => {
   const n = v ? Number(v) : NaN;
   return Number.isFinite(n) ? n : fallback;
 };
+
+/** Compact human duration: "now", "45s", "12m", "4h 12m". */
+const fmtDur = (ms: number): string => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s <= 0) return "now";
+  if (s < 60) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+};
+
+/** Persisted next-fire times for the loop + Track-1 heartbeat (restart-safe cadence). */
+export interface ScheduleState {
+  /** Epoch ms the next main-loop cycle is due. */
+  loopNextAt?: number;
+  /** Timeframe the next main-loop cycle should run. */
+  loopTimeframe?: ForecastTimeframe;
+  /** Escalation depth to restore (retry ladder position). */
+  retryStep?: number;
+  /** Epoch ms the next Track-1 heartbeat is due. */
+  qualifyNextAt?: number;
+}
+
+/**
+ * How long to wait before the next fire when RESUMING a persisted schedule after a
+ * restart, so the cadence isn't corrupted by downtime:
+ *   - no saved time            → `fallbackMs` (fresh schedule / run-now default)
+ *   - already due (was down)   → `overdueMs`  (fire a catch-up soon)
+ *   - still in the future      → the remaining time, capped at `capMs`
+ * Pure + deterministic (now is injectable) so it's unit-testable.
+ */
+export function resumeDelayMs(
+  nextAt: number | undefined,
+  opts: { fallbackMs: number; overdueMs: number; capMs: number; now?: number },
+): number {
+  if (typeof nextAt !== "number" || !Number.isFinite(nextAt))
+    return opts.fallbackMs;
+  const remaining = nextAt - (opts.now ?? Date.now());
+  return remaining <= 0 ? opts.overdueMs : Math.min(remaining, opts.capMs);
+}
+
+/**
+ * Whether a manual forecast-and-trade should be BLOCKED: only in LIVE mode, only for a
+ * non-ETH asset (BTC/BNB aren't on the competition's eligible token list, so a real buy
+ * wastes USDT on something that won't count and may not route on TWAK). Gated by the
+ * TRACK1_BLOCK_BTC_BNB toggle — block by default; set it to "false" to allow. Paper mode
+ * and ETH are never blocked. The autonomous loop only ever trades ETH, so it's unaffected.
+ */
+export function isLiveTradeBlocked(
+  mode: "paper" | "live",
+  asset: string,
+  blockToggle: string | undefined = process.env.TRACK1_BLOCK_BTC_BNB,
+): boolean {
+  if (mode !== "live" || asset === "ETH") return false;
+  return (blockToggle ?? "true").toLowerCase() !== "false";
+}
 
 /** How long a forecast-driven position is held before auto-close (= the forecast horizon). */
 const TIMEFRAME_MS: Record<ForecastTimeframe, number> = {
@@ -150,11 +207,15 @@ export class TradingService extends Service {
   private retryStep = 0;
   private nextRunAt?: number;
   private nextTimeframe?: ForecastTimeframe;
+  /** When the next Track-1 heartbeat is due (epoch ms) — persisted so a restart resumes it. */
+  private qualifyNextAt?: number;
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly forecastTrades = new Map<string, OpenForecastTrade>();
   private lastResult?: ForecastTradeResult;
   /** Where open positions are persisted so they survive an agent restart. */
   private readonly statePath: string;
+  /** Where the loop + heartbeat next-fire times are persisted (restart-safe cadence). */
+  private readonly schedulePath: string;
 
   readonly intervalMs: number;
   readonly retryMs: number;
@@ -196,6 +257,7 @@ export class TradingService extends Service {
     // Scope the open-position ledger by mode so paper positions can NEVER be
     // reconciled (and sold for real) after switching ENABLE_LIVE_TRADING on.
     this.statePath = join(stateDir, `open-trades-${this.mode}.json`);
+    this.schedulePath = join(stateDir, `schedule-${this.mode}.json`);
     try {
       this.provider = new CmcDataProvider();
       this.executor =
@@ -227,7 +289,8 @@ export class TradingService extends Service {
     // Recover any positions left open by a previous run before (re)starting the loop.
     service.reconcileOpenTrades();
     if (/\b(trade|auto|on|true)\b/i.test(process.env.AUTONOMOUS_MODE ?? "")) {
-      const r = service.startLoop();
+      // Boot auto-start RESUMES the persisted loop + heartbeat cadence (restart-safe).
+      const r = service.startLoop(true);
       logger.info(
         { started: r.ok, reason: r.reason },
         "TradingService: AUTONOMOUS_MODE auto-start",
@@ -268,6 +331,7 @@ export class TradingService extends Service {
   async forecastAndTrade(
     timeframe: ForecastTimeframe,
     useCmc: boolean,
+    asset: Asset = "ETH",
   ): Promise<ForecastTradeResult> {
     if (!this.executor || !this.provider) {
       const r: ForecastTradeResult = {
@@ -279,7 +343,20 @@ export class TradingService extends Service {
       this.lastResult = r;
       return r;
     }
-    const asset = "ETH";
+    // `asset` is BTC/ETH/BNB (defaults to ETH for the autonomous loop). The position
+    // it opens auto-closes after `timeframe` and is restart-safe (persisted + reconciled).
+    // Live-mode safety: refuse a real BTC/BNB buy (ineligible for the competition) BEFORE
+    // spending any forecast credits — toggle with TRACK1_BLOCK_BTC_BNB (block by default).
+    if (isLiveTradeBlocked(this.mode, asset)) {
+      const r: ForecastTradeResult = {
+        ok: false,
+        traded: false,
+        timeframe,
+        reason: `${asset} is not on the competition's eligible token list — blocked in LIVE mode (set TRACK1_BLOCK_BTC_BNB=false to override). ETH is eligible.`,
+      };
+      this.lastResult = r;
+      return r;
+    }
     // Supplementary context (CMC options-positioning + technicals/regime + x402), all
     // bounded/best-effort/parallel; options/derivatives data stays the PRIMARY ~60% basis.
     const extraContext = await gatherForecastEnrichment(
@@ -317,7 +394,7 @@ export class TradingService extends Service {
 
     const sizeUsd = this.tradeSizeUsd;
     const price = f.currentPrice;
-    this.executor.mark?.({ ETH: price });
+    this.executor.mark?.({ [asset]: price });
     const pf = await this.executor.getPortfolio();
     if (pf.cashUsd < sizeUsd) {
       const r = {
@@ -343,7 +420,7 @@ export class TradingService extends Service {
       currentDrawdownPct: drawdownPct,
       tradesToday: this.tradesToday,
       volumeTodayUsd: this.volumeTodayUsd,
-      tokenSymbol: "ETH",
+      tokenSymbol: asset,
       isTokenEligible: true,
     });
     if (!guard.allowed) {
@@ -355,7 +432,7 @@ export class TradingService extends Service {
 
     const swap = await this.executor.swap({
       fromSymbol: "USDT",
-      toSymbol: "ETH",
+      toSymbol: asset,
       amountUsd: sizeUsd,
       maxSlippageBps: num("RISK_MAX_SLIPPAGE_BPS", 100),
     });
@@ -433,13 +510,29 @@ export class TradingService extends Service {
       /* keep entry price as fallback */
     }
     this.executor.mark?.({ [t.asset]: price });
+
+    // How much of the asset to sell. `boughtAmount` is the IDEAL fill (sizeUsd/price);
+    // the wallet actually received LESS (the buy paid a DEX fee + slippage), so selling
+    // `boughtAmount` worth would request MORE than is held and a live swap would reject
+    // it for insufficient balance — leaving the position stuck open. So cap at the real
+    // on-chain balance and shave a small haircut to absorb any price tick / rounding
+    // between this read and the swap. (Paper caps internally; this protects live/TWAK.)
+    let sellAmount = t.boughtAmount;
+    try {
+      const pf = await this.executor.getPortfolio();
+      const held = pf.holdings.find((h) => h.symbol === t.asset)?.amount ?? 0;
+      if (held > 0) sellAmount = Math.min(t.boughtAmount, held);
+    } catch {
+      /* no balance read — fall back to boughtAmount (still haircut-shaved below) */
+    }
+    const haircut = 1 - num("CLOSE_SELL_HAIRCUT_BPS", 50) / 10_000; // default 0.5%
     const swap = await this.executor.swap({
       fromSymbol: t.asset,
       toSymbol: "USDT",
-      amountUsd: t.boughtAmount * price,
+      amountUsd: sellAmount * price * haircut,
       maxSlippageBps: num("RISK_MAX_SLIPPAGE_BPS", 100),
     });
-    const pnlUsd = (price - t.entryPrice) * t.boughtAmount;
+    const pnlUsd = (price - t.entryPrice) * sellAmount;
     logger.info(
       {
         id,
@@ -587,17 +680,64 @@ export class TradingService extends Service {
    * {@link retryMs} (1h): daily-fail → 4h, then → 1h, then 1h… repeatedly until a
    * trade actually opens, after which it resets to the 12h base cadence.
    */
-  startLoop(): { ok: boolean; reason?: string } {
+  /**
+   * Start the loop. `resume=true` (used on a restart/boot) RESUMES the persisted
+   * cadence so downtime doesn't corrupt it: an overdue cycle/heartbeat fires soon
+   * (catch-up), one still in the future waits out only its remaining time, and the
+   * Track-1 18h heartbeat is no longer reset to a fresh 18h on every restart (which
+   * could starve it under frequent restarts and miss the daily-trade guarantee).
+   * `resume=false` (manual "start auto") starts fresh: a cycle now, heartbeat 1 interval out.
+   */
+  startLoop(resume = false): { ok: boolean; reason?: string } {
     if (!this.executor)
       return { ok: false, reason: "not initialized (COINMARKETCAP_API_KEY?)" };
     if (this.loopActive) return { ok: false, reason: "already running" };
     this.loopActive = true;
     this.retryStep = 0;
-    void this.runCycle(this.autoTimeframe);
-    // Start the standalone Track-1 qualifying heartbeat; first one is one interval out.
-    this.scheduleQualifyCycle(num("TRACK1_QUALIFY_INTERVAL_MS", 43_200_000));
+    const saved = resume ? this.loadSchedule() : {};
+
+    // Main loop: resume the persisted cadence (catch up if a cycle came due while we
+    // were down; otherwise wait the remainder). Fresh start / no saved time → run now.
+    const loopTf = saved.loopTimeframe ?? this.autoTimeframe;
+    if (typeof saved.retryStep === "number") this.retryStep = saved.retryStep;
+    const loopDelay = resumeDelayMs(saved.loopNextAt, {
+      fallbackMs: 0, // no saved schedule → run a cycle immediately
+      overdueMs: 0, // was due during downtime → run immediately (catch up)
+      capMs: this.intervalMs,
+    });
+    if (loopDelay <= 0) {
+      void this.runCycle(loopTf);
+    } else {
+      this.nextTimeframe = loopTf;
+      this.nextRunAt = Date.now() + loopDelay;
+      this.persistSchedule();
+      this.loopTimer = setTimeout(() => void this.runCycle(loopTf), loopDelay);
+    }
+
+    // Track-1 heartbeat: resume its persisted next-fire (overdue → catch-up soon).
+    const interval = num("TRACK1_QUALIFY_INTERVAL_MS", 43_200_000);
+    const heartbeatDelay = resumeDelayMs(saved.qualifyNextAt, {
+      fallbackMs: interval, // fresh / no saved → first one a full interval out
+      overdueMs: Math.min(num("TRACK1_QUALIFY_RETRY_MS", 300_000), 30_000),
+      capMs: interval,
+    });
+    this.scheduleQualifyCycle(heartbeatDelay);
+
     // Start the take-profit monitor (no-op unless RISK_TAKE_PROFIT_ENABLED=true).
     this.scheduleTakeProfitCheck();
+
+    // Eyeball line: after a restart this shows the RESUMED cadence, not a fresh reset.
+    const heartbeatOn =
+      (process.env.TRACK1_QUALIFY_ENABLED ?? "false").toLowerCase() === "true";
+    logger.info(
+      {
+        resumed: resume,
+        mode: this.mode,
+        nextLoop: loopDelay <= 0 ? "now" : fmtDur(loopDelay),
+        nextHeartbeat: heartbeatOn ? fmtDur(heartbeatDelay) : "off",
+      },
+      `Astraeus loop started (${this.mode}) — next loop ${loopDelay <= 0 ? "now" : `in ${fmtDur(loopDelay)}`} · next Track-1 heartbeat ${heartbeatOn ? `in ${fmtDur(heartbeatDelay)}` : "off"}`,
+    );
     return { ok: true };
   }
 
@@ -701,6 +841,7 @@ export class TradingService extends Service {
 
     this.nextTimeframe = nextTf;
     this.nextRunAt = Date.now() + delayMs;
+    this.persistSchedule();
     this.loopTimer = setTimeout(() => {
       void this.runCycle(nextTf);
     }, delayMs);
@@ -720,6 +861,8 @@ export class TradingService extends Service {
   private scheduleQualifyCycle(delayMs: number): void {
     if (!this.loopActive) return;
     this.clearQualifyTimer();
+    this.qualifyNextAt = Date.now() + delayMs;
+    this.persistSchedule();
     this.qualifyTimer = setTimeout(() => void this.runQualifyCycle(), delayMs);
   }
 
@@ -727,6 +870,37 @@ export class TradingService extends Service {
     if (this.qualifyTimer) {
       clearTimeout(this.qualifyTimer);
       this.qualifyTimer = undefined;
+    }
+  }
+
+  /** Persist the loop + heartbeat next-fire times so a restart resumes the cadence
+   *  instead of resetting it (best-effort; a disk error never breaks trading). */
+  private persistSchedule(): void {
+    try {
+      mkdirSync(dirname(this.schedulePath), { recursive: true });
+      const state: ScheduleState = {
+        loopNextAt: this.nextRunAt,
+        loopTimeframe: this.nextTimeframe,
+        retryStep: this.retryStep,
+        qualifyNextAt: this.qualifyNextAt,
+      };
+      writeFileSync(this.schedulePath, JSON.stringify(state, null, 2));
+    } catch (e) {
+      logger.warn(
+        { err: e instanceof Error ? e.message : String(e) },
+        "could not persist schedule",
+      );
+    }
+  }
+
+  /** Read the persisted schedule (empty if missing/corrupt). */
+  private loadSchedule(): ScheduleState {
+    try {
+      if (!existsSync(this.schedulePath)) return {};
+      const s = JSON.parse(readFileSync(this.schedulePath, "utf8"));
+      return s && typeof s === "object" ? (s as ScheduleState) : {};
+    } catch {
+      return {};
     }
   }
 

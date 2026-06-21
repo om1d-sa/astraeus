@@ -293,4 +293,37 @@ describe("closeForecastTrade — no double-sell on a concurrent close race", () 
     expect([swaps[0].fromSymbol, swaps[0].toSymbol]).toEqual(["ETH", "USDT"]);
     expect((raw.forecastTrades as Map<string, unknown>).size).toBe(0);
   });
+
+  it("never sells MORE than the wallet actually holds (buy-fee dust) on close", async () => {
+    const swaps: MockSwap[] = [];
+    // openTrade() records boughtAmount = 5/3000 (the IDEAL fill). The wallet only got
+    // 0.00150 ETH (a buy fee ate the rest) — selling boughtAmount worth would exceed it.
+    const heldEth = 0.0015;
+    const exec = {
+      mark: () => {},
+      getPortfolio: async () => ({
+        totalValueUsd: 5,
+        cashUsd: 0,
+        holdings: [{ symbol: "ETH", amount: heldEth, valueUsd: heldEth * 3100 }],
+      }),
+      swap: async (r: MockSwap) => {
+        swaps.push(r);
+        return { ok: true, txHash: "0xclose" };
+      },
+    };
+    const prov = {
+      getTokenSignals: async () => [{ symbol: "ETH", priceUsd: 3100 }],
+    };
+    const { raw } = makeService(exec, prov);
+    (raw.forecastTrades as Map<string, unknown>).set("t1", openTrade());
+
+    await (
+      raw as unknown as { closeForecastTrade(id: string): Promise<void> }
+    ).closeForecastTrade("t1");
+
+    expect(swaps.length).toBe(1);
+    // The requested USD must be ≤ the value actually held (capped at heldEth, minus haircut).
+    expect(swaps[0].amountUsd).toBeLessThanOrEqual(heldEth * 3100);
+    expect(swaps[0].amountUsd).toBeGreaterThan(0);
+  });
 });
