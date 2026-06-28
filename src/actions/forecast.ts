@@ -117,8 +117,15 @@ export const forecastAction: Action = {
         .map((s) => `  • ${s.indicator}: ${s.value} (${s.interpretation})`)
         .join("\n");
 
+      // Current spot, fixed to 2 decimals (0.00) on its own line.
+      const currentPriceFmt = f.currentPrice.toLocaleString("en-US", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+
       const responseText =
         `${asset} ${TF_LABEL[timeframe]} forecast — ${arrow} ${p.direction.toUpperCase()}\n` +
+        `• Current ${asset} trading price: $${currentPriceFmt}\n` +
         `• Target: $${p.targetPrice.toLocaleString()} (${p.priceChange >= 0 ? "+" : ""}${p.priceChange.toFixed(1)}%)\n` +
         `• Range: $${p.range.low.toLocaleString()} – $${p.range.high.toLocaleString()}\n` +
         `• Confidence: ${(p.confidence * 100).toFixed(0)}%\n` +

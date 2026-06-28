@@ -19,6 +19,15 @@ export interface SwapRequest {
   toSymbol: string;
   amountUsd: number;
   maxSlippageBps: number;
+  /**
+   * Optional on-chain contract address for the SELL leg's token. When set, the live
+   * (TWAK) executor passes the address instead of the (chain-ambiguous) ticker so the
+   * aggregator resolves the exact BSC token — symbols like M/B/U/NFT collide across
+   * chains. Ignored by the paper executor (which keys holdings by symbol).
+   */
+  fromAddress?: string;
+  /** Optional on-chain contract address for the BUY leg's token (see {@link fromAddress}). */
+  toAddress?: string;
 }
 
 export interface SwapResult {

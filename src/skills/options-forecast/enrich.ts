@@ -81,6 +81,77 @@ export async function fetchCmcRestEnrichment(
   }
 }
 
+/**
+ * Compact a x402 payload for the forecast prompt. CoinMarketCap's quotes endpoint
+ * returns a big JSON object (a `data` array of every token sharing the ticker — the
+ * real asset plus dozens of same-symbol memecoins — each with ~40 tags) whose actual
+ * price sits far past any sane truncation. So when the body parses as a CMC quotes
+ * response, pull just the primary token's price + key changes; otherwise fall back to
+ * a (generous) truncation of the raw text.
+ */
+export function summarizeX402Payload(text: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return truncate(text, 2000);
+  }
+  const root = parsed as { data?: unknown };
+  const arr: Array<Record<string, unknown>> = Array.isArray(root?.data)
+    ? (root.data as Array<Record<string, unknown>>)
+    : Array.isArray(parsed)
+      ? (parsed as Array<Record<string, unknown>>)
+      : root?.data && typeof root.data === "object"
+        ? [root.data as Record<string, unknown>]
+        : [];
+  if (arr.length === 0) return truncate(text, 2000);
+
+  // CMC x402 v3 returns `quote` as an array [{symbol:"USD",…}]; REST v1 as {USD:{…}}.
+  const usdQuote = (
+    e: Record<string, unknown>,
+  ): Record<string, unknown> | undefined => {
+    const q = e.quote;
+    if (Array.isArray(q))
+      return (q.find(
+        (x) => (x as { symbol?: string })?.symbol === "USD",
+      ) ?? q[0]) as Record<string, unknown> | undefined;
+    if (q && typeof q === "object")
+      return ((q as Record<string, unknown>).USD ?? q) as Record<string, unknown>;
+    return undefined;
+  };
+  const priceOf = (e: Record<string, unknown>): number | undefined => {
+    const p = usdQuote(e)?.price;
+    return typeof p === "number" && Number.isFinite(p) ? p : undefined;
+  };
+  // Primary token = the real asset: a live USD price, lowest cmc_rank (nulls last) —
+  // this discards the same-ticker memecoins, which have null rank and null price.
+  const top = arr
+    .filter((e) => priceOf(e) !== undefined)
+    .sort((a, b) => {
+      const ra = typeof a.cmc_rank === "number" ? a.cmc_rank : Number.MAX_SAFE_INTEGER;
+      const rb = typeof b.cmc_rank === "number" ? b.cmc_rank : Number.MAX_SAFE_INTEGER;
+      return ra - rb;
+    })[0];
+  if (!top) return truncate(text, 2000);
+
+  const q = usdQuote(top) ?? {};
+  const sym = String(top.symbol ?? top.name ?? "?");
+  const price = priceOf(top) as number;
+  const pct = (k: string): string => {
+    const v = q[k];
+    return typeof v === "number" ? `${v >= 0 ? "+" : ""}${v.toFixed(2)}%` : "n/a";
+  };
+  const vol =
+    typeof q.volume_24h === "number"
+      ? ` vol24h $${(q.volume_24h / 1e9).toFixed(2)}B`
+      : "";
+  const mcap =
+    typeof q.market_cap === "number" && q.market_cap > 0
+      ? ` mcap $${(q.market_cap / 1e9).toFixed(0)}B`
+      : "";
+  return `${sym} $${price.toFixed(2)} (1h ${pct("percent_change_1h")}, 24h ${pct("percent_change_24h")}, 7d ${pct("percent_change_7d")})${vol}${mcap}`;
+}
+
 /** x402-paid premium signal(s). OFF unless X402_ENRICH=true. Parallel + bounded per endpoint. */
 export async function fetchX402Enrichment(): Promise<string | undefined> {
   if ((process.env.X402_ENRICH ?? "").toLowerCase() !== "true")
@@ -91,12 +162,15 @@ export async function fetchX402Enrichment(): Promise<string | undefined> {
     .filter(Boolean);
   if (urls.length === 0) return undefined;
   const timeoutMs = num("X402_ENRICH_TIMEOUT_MS", 15_000);
+  // requestX402 may retry a transient "fetch failed" up to X402_RETRIES times;
+  // widen the overall guard so a retry isn't cut off mid-flight.
+  const attempts = Math.max(1, num("X402_RETRIES", 2));
 
   const fetchOne = async (url: string): Promise<string | undefined> => {
     try {
       const r = await raceTimeout(
         requestX402(url, { timeoutMs }),
-        timeoutMs + 1_000,
+        timeoutMs * attempts + 1_000,
       );
       if (!r || !r.ok || !(r.body ?? r.raw)) {
         logger.warn(
@@ -109,7 +183,7 @@ export async function fetchX402Enrichment(): Promise<string | undefined> {
         { url, paid: r.paid, txHash: r.txHash },
         "x402 enrichment fetched",
       );
-      return `[${url}]\n${truncate(r.body ?? r.raw, 1500)}`;
+      return `[${url}]\n${summarizeX402Payload(r.body ?? r.raw)}`;
     } catch (e) {
       logger.warn({ url, err: String(e) }, "x402 endpoint errored — skipped");
       return undefined;

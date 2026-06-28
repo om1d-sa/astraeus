@@ -27,6 +27,98 @@ const num = (key: string, fallback: number): number => {
 const sleep = (ms: number): Promise<void> =>
   new Promise((res) => setTimeout(res, ms));
 
+/**
+ * Parse a JSON object out of an LLM response that may be (a) wrapped in a
+ * ```json … ``` markdown fence, and/or (b) truncated by max_tokens mid-value —
+ * a common failure when a verbose `reasoning` string (the last field) runs long.
+ *
+ * Three tiers, returning the first that parses:
+ *   1. A complete, balanced `{…}` block (the normal case).
+ *   2. Repair: close an open string + any open braces (drops a trailing dangling
+ *      escape / empty key). Preserves a reasoning value cut off mid-sentence.
+ *   3. Fallback: keep only complete top-level pairs up to the last `depth === 1`
+ *      comma, dropping a partial trailing pair JSON.parse can't accept (e.g. a
+ *      reasoning string containing a raw newline). Since every numeric forecast
+ *      field precedes `reasoning`, the forecast survives even if reasoning is lost.
+ *
+ * Returns null only when there is no usable `{` at all. `repaired` is set true
+ * when tier 2/3 salvaged a truncated response, so the caller can log it.
+ */
+function parseLooseJson(raw: string): {
+  value: Record<string, unknown>;
+  repaired: boolean;
+} | null {
+  // Strip a leading ```json / ``` fence and any trailing fence.
+  const text = raw
+    .replace(/```(?:json)?\s*/i, "")
+    .replace(/```\s*$/, "")
+    .trim();
+
+  const start = text.indexOf("{");
+  if (start === -1) return null;
+
+  const tryParse = (s: string): Record<string, unknown> | null => {
+    try {
+      const v = JSON.parse(s);
+      return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  // Tier 1: a complete, balanced object is present.
+  const balanced = text.match(/\{[\s\S]*\}/);
+  if (balanced) {
+    const ok = tryParse(balanced[0]);
+    if (ok) return { value: ok, repaired: false };
+  }
+
+  // Single scan from the first `{`, tracking string/escape/brace depth and the
+  // index of the last top-level (`depth === 1`) comma — the boundary after the
+  // last fully-complete key/value pair.
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let lastTopComma = -1;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      if (inString) escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === "{") depth++;
+    else if (ch === "}") depth--;
+    else if (ch === "," && depth === 1) lastTopComma = i;
+  }
+
+  // Tier 2: close an open string + any open braces.
+  let repaired = text.slice(start);
+  if (escaped) repaired = repaired.slice(0, -1); // lone trailing backslash
+  if (inString) repaired += '"';
+  // Drop a dangling key with no value yet, e.g. `… , "reasoning":`.
+  repaired = repaired.replace(/,\s*"[^"]*"\s*:\s*"?$/, "");
+  if (depth > 0) repaired += "}".repeat(depth);
+  const tier2 = tryParse(repaired);
+  if (tier2) return { value: tier2, repaired: true };
+
+  // Tier 3: keep only the complete top-level pairs and close.
+  if (lastTopComma > start) {
+    const tier3 = tryParse(text.slice(start, lastTopComma) + "}");
+    if (tier3) return { value: tier3, repaired: true };
+  }
+
+  return null;
+}
+
 // Timeframe configurations
 const TIMEFRAME_CONFIG: Record<
   ForecastTimeframe,
@@ -59,7 +151,7 @@ function extractSignals(data: OptionsData): OptionsSignal[] {
       indicator: "IV Percentile",
       value: ivPercentile,
       interpretation: ivInterpretation,
-      weight: 0.15,
+      weight: num("SIGNAL_WEIGHT_IV", 0.15),
       confidence: 0.7,
       source: "deribit",
     });
@@ -80,7 +172,7 @@ function extractSignals(data: OptionsData): OptionsSignal[] {
       indicator: "DVOL Index",
       value: dvol,
       interpretation: dvolInterpretation,
-      weight: 0.12,
+      weight: num("SIGNAL_WEIGHT_DVOL", 0.12),
       confidence: 0.75,
       source: "deribit",
     });
@@ -102,7 +194,7 @@ function extractSignals(data: OptionsData): OptionsSignal[] {
       indicator: "Put/Call Ratio",
       value: pcr.toFixed(2),
       interpretation: pcrInterpretation,
-      weight: 0.15,
+      weight: num("SIGNAL_WEIGHT_PCR", 0.15),
       confidence: 0.65,
       source: "deribit",
     });
@@ -124,7 +216,7 @@ function extractSignals(data: OptionsData): OptionsSignal[] {
       indicator: "Max Pain Distance",
       value: `${distancePercent.toFixed(1)}%`,
       interpretation: maxPainInterpretation,
-      weight: 0.1,
+      weight: num("SIGNAL_WEIGHT_MAXPAIN", 0.1),
       confidence: 0.6,
       source: "deribit",
     });
@@ -136,7 +228,7 @@ function extractSignals(data: OptionsData): OptionsSignal[] {
       indicator: "Net Options Flow",
       value: data.flow.sentiment,
       interpretation: data.flow.sentiment,
-      weight: 0.15,
+      weight: num("SIGNAL_WEIGHT_FLOW", 0.15),
       confidence: 0.7,
       source: "deribit",
     });
@@ -162,7 +254,7 @@ function extractSignals(data: OptionsData): OptionsSignal[] {
       indicator: "Funding Rate",
       value: `${(fr * 100).toFixed(3)}%`,
       interpretation: frInterpretation,
-      weight: 0.12,
+      weight: num("SIGNAL_WEIGHT_FUNDING", 0.12),
       confidence: 0.65,
       source: "binance",
     });
@@ -186,7 +278,7 @@ function extractSignals(data: OptionsData): OptionsSignal[] {
       indicator: "Liquidation Ratio",
       value: `${longPercent.toFixed(0)}% longs`,
       interpretation: liqInterpretation,
-      weight: 0.1,
+      weight: num("SIGNAL_WEIGHT_LIQUIDATION", 0.1),
       confidence: 0.6,
       source: "binance",
     });
@@ -208,7 +300,7 @@ function extractSignals(data: OptionsData): OptionsSignal[] {
       indicator: "25D Risk Reversal",
       value: `${rr.toFixed(1)}%`,
       interpretation: rrInterpretation,
-      weight: 0.11,
+      weight: num("SIGNAL_WEIGHT_RISK_REVERSAL", 0.11),
       confidence: 0.7,
       source: "deribit",
     });
@@ -276,6 +368,13 @@ async function generateLLMForecast(
 ): Promise<{ prediction: PricePrediction; reasoning: string }> {
   const config = TIMEFRAME_CONFIG[timeframe];
 
+  // Supplementary-context weighting hints handed to the LLM. Env-controllable so the
+  // emphasis can be tuned without a code change (defaults 50/30/20 — options &
+  // derivatives / technicals / ETF-flow & other paid context).
+  const wOptions = num("FORECAST_WEIGHT_OPTIONS", 50);
+  const wTechnicals = num("FORECAST_WEIGHT_TECHNICALS", 30);
+  const wEtf = num("FORECAST_WEIGHT_ETF", 20);
+
   // Build prompt with options data
   const prompt = `You are an expert options-market analyst providing directional price predictions with an explicit above/below threshold view.
 
@@ -294,7 +393,7 @@ AGGREGATED SIGNALS:
 ${signals.map((s) => `- ${s.indicator}: ${s.value} (${s.interpretation}, confidence: ${(s.confidence * 100).toFixed(0)}%)`).join("\n")}
 
 OVERALL SENTIMENT: ${sentiment.overall.toUpperCase()} (Score: ${sentiment.score}, Confidence: ${(sentiment.confidence * 100).toFixed(0)}%)
-${extraContext ? `\nSUPPLEMENTARY CONTEXT (CoinMarketCap Agent Hub / paid sources). IMPORTANT WEIGHTING: weight the OPTIONS & DERIVATIVES data above ~50%, the technical indicators (RSI/MACD/EMA) ~30%, and the ETF-flow / other supplementary context ~20% (for BNB, which has no spot ETF, redistribute that 20% across options & technicals). If a current ${asset} price from CoinMarketCap is provided, reference it explicitly in your reasoning:\n${extraContext}\n` : ""}
+${extraContext ? `\nSUPPLEMENTARY CONTEXT (CoinMarketCap Agent Hub / paid sources). IMPORTANT WEIGHTING (internal only): weight the OPTIONS & DERIVATIVES data above ~${wOptions}%, the technical indicators (RSI/MACD/EMA) ~${wTechnicals}%, and the ETF-flow / other supplementary context ~${wEtf}% (for BNB, which has no spot ETF, redistribute that ${wEtf}% across options & technicals). Apply this weighting silently when forming your view — do NOT mention these percentages, the word "weight", or any numeric weighting in your reasoning. If a current ${asset} price from CoinMarketCap is provided, reference it explicitly in your reasoning:\n${extraContext}\n` : ""}
 YOUR TASK: Provide a BINARY prediction for ${config.label} timeframe.
 
 You must:
@@ -312,7 +411,7 @@ Respond in this exact JSON format:
   "confidence": <0-1>,
   "rangeLow": <number>,
   "rangeHigh": <number>,
-  "reasoning": "<brief explanation of why ABOVE/BELOW threshold>"
+  "reasoning": "<brief explanation of why ABOVE/BELOW threshold — describe the signals in plain terms; do NOT mention weighting percentages, the word 'weight', or how much each signal category counts>"
 }`;
 
   let headers: Record<string, string>;
@@ -331,10 +430,11 @@ Respond in this exact JSON format:
     `[PricePredictor] Calling OpenRouter with model: ${MODELS.reasoning}`,
   );
 
-  const callOnce = (): Promise<Response> =>
+  const callOnce = (signal: AbortSignal): Promise<Response> =>
     fetch(OPENROUTER_CONFIG.chatEndpoint, {
       method: "POST",
       headers,
+      signal,
       body: JSON.stringify({
         model: MODELS.reasoning,
         messages: [
@@ -346,31 +446,49 @@ Respond in this exact JSON format:
           { role: "user", content: prompt },
         ],
         temperature: 0.3,
-        max_tokens: 500,
+        max_tokens: 1200,
       }),
     });
 
+  // HARD per-attempt timeout: a socket that opens but never responds would otherwise
+  // block `await callOnce()` FOREVER (fetch only rejects on a thrown error / closed
+  // socket, not a silent stall). That freezes the whole forecast → trade cycle, and
+  // because the autonomous loop arms its next timer only AFTER a cycle returns — and
+  // the Track-1 heartbeat defers while a cycle is in flight — one stalled request
+  // silently kills BOTH the loop and the daily-trade guarantee. Abort → treated as a
+  // transient below → retried, then fails fast so runCycle can reschedule.
+  const timeoutMs = num("FORECAST_LLM_TIMEOUT_MS", 60_000);
   // Retry on TRANSIENT failures only: network blips (fetch throws — "Unable to
-  // connect", socket reset) and 408/429/5xx. Auth/400/other 4xx are real — fail fast.
+  // connect", socket reset), a timeout abort, and 408/429/5xx. Auth/400/other 4xx
+  // are real — fail fast.
   const maxAttempts = Math.max(1, num("FORECAST_LLM_RETRIES", 3));
   const retryMs = num("FORECAST_LLM_RETRY_MS", 1500);
   let response: Response | undefined;
   let lastErr = "";
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
     let r: Response;
     try {
-      r = await callOnce();
+      r = await callOnce(ac.signal);
     } catch (e) {
-      lastErr = e instanceof Error ? e.message : String(e);
+      const aborted = e instanceof Error && e.name === "AbortError";
+      lastErr = aborted
+        ? `request timed out after ${timeoutMs}ms`
+        : e instanceof Error
+          ? e.message
+          : String(e);
       if (attempt === maxAttempts)
         throw new Error(
           `OpenRouter call failed after ${maxAttempts} attempts: ${lastErr}`,
         );
       console.warn(
-        `[PricePredictor] network error "${lastErr}", retrying (${attempt}/${maxAttempts})…`,
+        `[PricePredictor] ${aborted ? "timeout" : "network error"} "${lastErr}", retrying (${attempt}/${maxAttempts})…`,
       );
       await sleep(retryMs * attempt);
       continue;
+    } finally {
+      clearTimeout(timer);
     }
     if (r.ok) {
       response = r;
@@ -404,24 +522,22 @@ Respond in this exact JSON format:
     `[PricePredictor] LLM response received (${content.length} chars)`,
   );
 
-  // Parse JSON from response
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
+  // Parse JSON from response. Tolerates markdown ```json fences and responses
+  // truncated mid-`reasoning` by max_tokens (all numeric fields precede it, so a
+  // repaired object is still a usable forecast). See parseLooseJson.
+  const parsedResult = parseLooseJson(content);
+  if (!parsedResult) {
     console.error(
-      `[PricePredictor] Could not parse JSON from response: ${content.substring(0, 200)}`,
+      `[PricePredictor] Could not parse JSON from response (${content.length} chars): ${content.substring(0, 200)}`,
     );
     throw new Error("Could not parse JSON from LLM response");
   }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(jsonMatch[0]);
-  } catch (parseError) {
-    console.error(
-      `[PricePredictor] JSON parse error: ${parseError}. Content: ${jsonMatch[0].substring(0, 200)}`,
+  if (parsedResult.repaired) {
+    console.warn(
+      `[PricePredictor] LLM response was truncated (${content.length} chars); salvaged forecast via JSON repair`,
     );
-    throw new Error(`Failed to parse LLM response as JSON: ${parseError}`);
   }
+  const parsed = parsedResult.value;
 
   // The LLM occasionally deviates from the contract (missing fields, uppercase
   // direction, numbers as strings). Normalize defensively so a malformed field can
@@ -468,8 +584,13 @@ Respond in this exact JSON format:
     Number.isFinite(thrRaw) && thrRaw > 0
       ? thrRaw
       : Math.round(spot / 100) * 100;
-  const conclusion =
-    parsed.conclusion || (direction === "down" ? "BELOW" : "ABOVE");
+  const conclusionRaw = String(parsed.conclusion ?? "").toUpperCase();
+  const conclusion: "ABOVE" | "BELOW" =
+    conclusionRaw === "ABOVE" || conclusionRaw === "BELOW"
+      ? conclusionRaw
+      : direction === "down"
+        ? "BELOW"
+        : "ABOVE";
 
   const prediction: PricePrediction = {
     targetPrice,

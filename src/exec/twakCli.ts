@@ -21,9 +21,16 @@ export interface RunTwakOptions {
 export interface TwakResult {
   json: unknown;
   raw: string;
+  /**
+   * Captured stderr. twak prints progress/status lines here — NOT stdout — including
+   * the x402 payment confirmation ("payment authorization signed"). stdout carries
+   * only the JSON payload, so callers that need to know whether a payment happened
+   * must read this, not `raw`.
+   */
+  stderr: string;
 }
 
-/** Run a `twak` command; returns loose-parsed JSON + raw stdout (even on error exit). */
+/** Run a `twak` command; returns loose-parsed JSON + raw stdout + stderr (even on error exit). */
 export async function runTwak(
   args: string[],
   opts: RunTwakOptions = {},
@@ -31,8 +38,9 @@ export async function runTwak(
   const bin = opts.bin ?? process.env.TWAK_BIN ?? "twak";
   const timeout = opts.timeoutMs ?? 120_000;
   let raw = "";
+  let errOut = "";
   try {
-    const { stdout } = await pExecFile(bin, args, {
+    const { stdout, stderr } = await pExecFile(bin, args, {
       timeout,
       // Windows installs the global bin as twak.cmd; shell resolves it via PATH.
       // All args are controlled (fixed flags, symbols, numbers, validated URLs) — no injection surface.
@@ -41,17 +49,19 @@ export async function runTwak(
       maxBuffer: 16 * 1024 * 1024,
     });
     raw = stdout ?? "";
+    errOut = stderr ?? "";
   } catch (e) {
     // twak exits non-zero on API/network errors but still prints JSON to stdout.
     const err = e as { stdout?: string; stderr?: string; message?: string };
     raw = err?.stdout ?? "";
+    errOut = err?.stderr ?? "";
     if (!raw) {
       throw new Error(
         `twak ${args[0]} failed: ${err?.stderr || err?.message || String(e)}`,
       );
     }
   }
-  return { json: parseLooseJson(raw), raw };
+  return { json: parseLooseJson(raw), raw, stderr: errOut };
 }
 
 export function parseLooseJson(text: string): unknown {

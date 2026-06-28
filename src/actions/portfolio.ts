@@ -10,6 +10,8 @@ import {
 import {
   runSkillBundle,
   skillList,
+  synthesizeSkillReport,
+  showRawSkillBundle,
   DEFAULT_PORTFOLIO_SKILLS,
 } from "../skills/options-forecast/skill-bundle";
 
@@ -82,18 +84,31 @@ export const portfolioAction: Action = {
     }
     const summary = holdings.map((h) => `${h.symbol} ${h.pct}%`).join(", ");
     try {
-      await callback?.({
-        text: `📊 Analyzing portfolio (${summary}) for risk reduction via CMC skills — this can take a minute…`,
-      });
+      // NO intermediate "analyzing…" callback. ElizaOS buffers every action callback() and
+      // flushes them all at the END with the SAME responseId (processActions →
+      // storageCallback), so a progress note never shows live AND it claims message-id=R
+      // first — the final report then re-uses id=R and the GUI dedups it, leaving the result
+      // invisible until a manual Ctrl+R. One final callback (below) broadcasts as a fresh
+      // message that renders live; the "thinking" indicator covers the ~1 min wait.
       const skillCtx = await runSkillBundle(
         runtime,
         skillList("PORTFOLIO_SKILLS", DEFAULT_PORTFOLIO_SKILLS),
         { portfolio: holdings, holdings, focus: "risk_reduction" },
         { force: true },
       );
-      const body =
+      // Distill the raw skill bundle into a clean trader briefing; fall back to the raw
+      // dump on synthesis failure, or show raw when CMC_SKILLS_SHOW_RAW=true.
+      let body =
         skillCtx ??
         "No CMC skill analysis returned (skills unavailable or timed out). Risk tips: trim concentrated positions, hold a stable buffer, and hedge majors.";
+      if (skillCtx && !showRawSkillBundle()) {
+        const briefing = await synthesizeSkillReport(
+          runtime,
+          skillCtx,
+          `a crypto spot portfolio (${summary}) — risk reduction`,
+        );
+        if (briefing) body = briefing;
+      }
       const responseText = `📊 Portfolio risk analysis — ${summary}\n\n${body}`;
       await callback?.({ text: responseText, actions: ["PORTFOLIO_ANALYSIS"] });
       return {

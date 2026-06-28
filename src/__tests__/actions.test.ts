@@ -141,8 +141,15 @@ describe("Action routing (validate)", () => {
     {
       action: "TRADE_DIAGNOSTICS",
       accept: ["run diagnostics", "health check", "is everything working", "debug trade", "why no trade"],
-      // Full-agent / skill-bundle debug defers to AGENT_DEBUG.
-      reject: ["debug skill bundles", "agent debug report"],
+      // Full-agent / skill-bundle debug and per-feature skill diagnostics defer to AGENT_DEBUG.
+      reject: [
+        "debug skill bundles",
+        "agent debug report",
+        "crypto research diagnostics",
+        "liquidation analysis diagnostics",
+        "overall market status diagnostics",
+        "portfolio analysis diagnostics",
+      ],
     },
     {
       action: "AGENT_DEBUG",
@@ -152,6 +159,12 @@ describe("Action routing (validate)", () => {
         "debug everything",
         "probe the skills",
         "debug research skills",
+        // Per-feature skill diagnostics live-probe their own bundle.
+        "crypto research diagnostics",
+        "liquidation analysis diagnostics",
+        "overall market status diagnostics",
+        "portfolio analysis diagnostics",
+        "search trending cryptos diagnostics",
       ],
       // Plain trade health stays with TRADE_DIAGNOSTICS; non-debug messages don't route here.
       reject: ["run diagnostics", "health check", "debug trade"],

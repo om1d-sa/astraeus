@@ -11,6 +11,7 @@ import {
   type TradingStatus,
   type PositionsReport,
 } from "../agent/service";
+import { fmtUtc } from "../util/time";
 
 type Intent = "start" | "stop" | "status";
 
@@ -35,17 +36,54 @@ const closesIn = (closeAt: number): string => {
   const m = Math.floor((ms % 3_600_000) / 60_000);
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 };
+/** Compact duration from a millisecond SPAN: "3d 8h" / "1h 30m" / "30m" / "45s". */
+const fmtSpan = (ms: number): string => {
+  if (ms <= 0) return "0s";
+  const d = Math.floor(ms / 86_400_000);
+  const h = Math.floor((ms % 86_400_000) / 3_600_000);
+  const m = Math.floor((ms % 3_600_000) / 60_000);
+  const s = Math.floor((ms % 60_000) / 1000);
+  if (d > 0) return h > 0 ? `${d}d ${h}h` : `${d}d`;
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  if (m > 0) return s > 0 ? `${m}m ${s}s` : `${m}m`;
+  return `${s}s`;
+};
 
 function formatStatus(st: TradingStatus, pos: PositionsReport): string {
   const lines = [
     `Autonomous trading: ${st.running ? "🟢 RUNNING" : "⚪ stopped"} (${st.mode} mode)`,
     `Strategy: forecast-driven ETH spot · $${st.tradeSizeUsd}/trade · ${st.baseTimeframe} every ${Math.round(st.intervalMs / 3_600_000)}h${st.takeProfitEnabled ? ` · take-profit +${st.takeProfitPct}%` : ""}`,
   ];
+  // Custom withdraw timeline: when set, positions auto-close after this span instead of
+  // the forecast timeframe (main = ETH loop, alt = high-risk altcoin loop, independent).
+  if (st.withdrawTimelineMainMs || st.withdrawTimelineAltMs) {
+    const parts: string[] = [];
+    if (st.withdrawTimelineMainMs)
+      parts.push(`main ${fmtSpan(st.withdrawTimelineMainMs)}`);
+    if (st.withdrawTimelineAltMs)
+      parts.push(`alt ${fmtSpan(st.withdrawTimelineAltMs)}`);
+    lines.push(
+      `Custom withdraw timeline: ${parts.join(" · ")} (overrides the timeframe; positions auto-close after this)`,
+    );
+  }
   if (st.running && st.nextTimeframe && st.nextRunAt) {
     const retry = st.retryStep > 0 ? ` · retry #${st.retryStep}` : "";
     lines.push(
-      `Next: ${st.nextTimeframe} forecast @ ${new Date(st.nextRunAt).toUTCString()}${retry}`,
+      `Next: ${st.nextTimeframe} forecast @ ${fmtUtc(st.nextRunAt)}${retry}`,
     );
+  }
+  // Track-1 safety loop — the standalone qualifying-trade heartbeat (guaranteed daily
+  // competition round-trip), independent of whether the forecast loop opened anything.
+  if (st.track1.enabled) {
+    const everyH = Math.round(st.track1.intervalMs / 3_600_000);
+    let t1 = `Track-1 safety loop: 🟢 ON · $${st.track1.tradeSizeUsd} round-trip every ${everyH}h`;
+    if (st.track1.inFlight) t1 += " · trade in progress";
+    else if (st.running && st.track1.nextRunAt)
+      t1 += ` · next @ ${fmtUtc(st.track1.nextRunAt)}`;
+    else if (!st.running) t1 += " · paused (loop stopped)";
+    lines.push(t1);
+  } else {
+    lines.push("Track-1 safety loop: ⚪ off (TRACK1_QUALIFY_ENABLED=false)");
   }
   if (st.portfolio) {
     lines.push(

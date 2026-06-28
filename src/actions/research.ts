@@ -7,7 +7,11 @@ import {
   type State,
   logger,
 } from "@elizaos/core";
-import { CmcDataProvider } from "../data/cmc";
+import {
+  CmcDataProvider,
+  TIMEFRAMES,
+  type MultiTimeframeTechnicals,
+} from "../data/cmc";
 import {
   runSkillBundle,
   skillsEnabled,
@@ -16,6 +20,14 @@ import {
   showRawSkillBundle,
   DEFAULT_RESEARCH_SKILLS,
 } from "../skills/options-forecast/skill-bundle";
+import {
+  formatTechnicalRow,
+  formatVerdict,
+  parseTimeframe,
+  readingsFromMulti,
+  synthesizeVerdict,
+  technicalSignals,
+} from "../skills/research/timeframes";
 
 // English filler words that look like symbols but are never the token here. Note:
 // "ON"/"IN" are intentionally NOT here (they're real CMC tokens) — the regex below
@@ -57,7 +69,7 @@ export const researchAction: Action = {
     "DD",
   ],
   description:
-    'Research a single token via CoinMarketCap: live price, 24h change, technicals (RSI/MACD/EMA) and latest news. Use for "research <token>", "due diligence on <token>", "analyze <token>".',
+    'Research a single token via CoinMarketCap: live price, 24h change, technicals, an overall bullish/bearish verdict with confidence and a price target, and latest news. Name a timeframe ("research X on daily", "4h", "weekly") for an expanded single-timeframe breakdown (RSI/MACD/EMA cross/price-vs-EMA/volatility); omit it for the wide 1h/4h/daily/weekly overview. Use for "research <token>", "due diligence on <token>", "analyze <token>".',
 
   validate: async (
     _runtime: IAgentRuntime,
@@ -87,11 +99,24 @@ export const researchAction: Action = {
       });
       return { text: "no symbol", success: false };
     }
+    // A specific timeframe ("research SIREN on daily" / "4h" / "weekly") → focus on just
+    // that one with an EXPANDED, forecast-style indicator breakdown. None named → the wide
+    // multi-timeframe (1h/4h/1D/1W) overview, one compact row each.
+    const requestedTf = parseTimeframe(message.content?.text ?? "");
+
     try {
       const cmc = new CmcDataProvider();
-      const [sig, tech, news, dex] = await Promise.all([
+      const techP: Promise<MultiTimeframeTechnicals> = requestedTf
+        ? cmc
+            .getTimeframeTechnicals(symbol, requestedTf)
+            .then((tech): MultiTimeframeTechnicals => ({ [requestedTf]: tech }))
+            .catch((): MultiTimeframeTechnicals => ({}))
+        : cmc
+            .getMultiTimeframeTechnicals(symbol)
+            .catch((): MultiTimeframeTechnicals => ({}));
+      const [sig, multiTech, news, dex] = await Promise.all([
         cmc.getTokenSignals([symbol]).catch(() => []),
-        cmc.getTechnicals(symbol).catch(() => undefined),
+        techP,
         cmc.getLatestNews(symbol, 3).catch(() => []),
         cmc.getDexPairs(symbol, 3).catch(() => []),
       ]);
@@ -109,17 +134,58 @@ export const researchAction: Action = {
       );
       if (s.volume24hUsd)
         lines.push(`• 24h volume: $${(s.volume24hUsd / 1e6).toFixed(1)}M`);
-      if (tech && tech.points >= 14) {
-        const macd =
-          tech.macd === undefined
-            ? "n/a"
-            : tech.macd > 0
-              ? `bullish (+${tech.macd.toFixed(1)})`
-              : `bearish (${tech.macd.toFixed(1)})`;
-        lines.push(
-          `• Technicals (daily): RSI14 ${tech.rsi14?.toFixed(0) ?? "n/a"}, MACD ${macd}`,
-        );
+
+      if (requestedTf) {
+        // Single timeframe: deep breakdown (RSI/MACD/EMA cross/price-vs-EMA/volatility).
+        const tech = multiTech[requestedTf];
+        if (tech && tech.points >= 14) {
+          const rows = technicalSignals(tech, s.priceUsd).map((sigLine) => `   • ${sigLine}`);
+          lines.push(`• Technicals (${requestedTf}):\n${rows.join("\n")}`);
+        } else {
+          lines.push(`• Technicals (${requestedTf}): not enough history yet`);
+        }
+      } else {
+        // No timeframe named: one compact row per timeframe that has a full window.
+        const shown: string[] = [];
+        const tfRows = TIMEFRAMES.flatMap((tf) => {
+          const tech = multiTech[tf];
+          if (!tech || tech.points < 14) return [];
+          shown.push(tf);
+          return [`   • ${tf}: ${formatTechnicalRow(tech)}`];
+        });
+        if (tfRows.length)
+          lines.push(`• Technicals (${shown.join("/")}):\n${tfRows.join("\n")}`);
       }
+
+      // Optional CMC skill bundle (off unless CMC_SKILLS_ENABLED=true) → the LLM distills
+      // it into a single sentiment + verdict instead of a raw dump. Falls back to raw if
+      // synthesis fails. Resolve the token's on-chain contract (only when skills will run)
+      // so contract-scoped skills (holder/safety/structure) analyze THIS token.
+      const contract = skillsEnabled()
+        ? await cmc.getTokenContract(symbol).catch(() => undefined)
+        : undefined;
+      const skillCtx = await runSkillBundle(
+        runtime,
+        skillList("RESEARCH_SKILLS", DEFAULT_RESEARCH_SKILLS),
+        {
+          symbol,
+          ...(contract
+            ? { contractToken: { symbol, platform: contract.platform, contract: contract.contract } }
+            : {}),
+        },
+      );
+      const synth = skillCtx
+        ? await synthesizeSkillSentiment(runtime, skillCtx, symbol)
+        : undefined;
+
+      // Overall verdict — blend the timeframe reads (and the skill sentiment when present)
+      // into a single bias / confidence / target line right under the technicals.
+      const verdict = synthesizeVerdict(readingsFromMulti(multiTech), s.priceUsd, {
+        skillSentiment: synth?.sentiment,
+      });
+      const verdictLine = formatVerdict(verdict, s.priceUsd);
+      if (verdictLine) lines.push(`• Verdict: ${verdictLine}`);
+
       if (dex.length) {
         const top = dex.map((d) => {
           const liq =
@@ -138,38 +204,26 @@ export const researchAction: Action = {
       }
       if (news.length)
         lines.push(`• News:\n${news.map((n) => `   • ${n.title}`).join("\n")}`);
-      // Optional CMC skill bundle (off unless CMC_SKILLS_ENABLED=true) → the LLM distills
-      // it into a single verdict instead of a raw dump. Falls back to raw if synthesis fails.
-      // Resolve the token's on-chain contract (only when skills will run) so contract-scoped
-      // skills (holder/safety/structure) analyze THIS token rather than the default.
-      const contract = skillsEnabled()
-        ? await cmc.getTokenContract(symbol).catch(() => undefined)
-        : undefined;
-      const skillCtx = await runSkillBundle(
-        runtime,
-        skillList("RESEARCH_SKILLS", DEFAULT_RESEARCH_SKILLS),
-        {
-          symbol,
-          ...(contract
-            ? { contractToken: { symbol, platform: contract.platform, contract: contract.contract } }
-            : {}),
-        },
-      );
-      if (skillCtx) {
-        const synth = await synthesizeSkillSentiment(runtime, skillCtx, symbol);
-        if (synth)
-          lines.push(
-            `\n• CMC skill read (${synth.sentiment >= 0 ? "+" : ""}${synth.sentiment.toFixed(2)}): ${synth.summary}`,
-          );
-        else if (showRawSkillBundle()) lines.push(`\n${skillCtx}`);
-      }
+      if (synth)
+        lines.push(
+          `\n• CMC skill read (${synth.sentiment >= 0 ? "+" : ""}${synth.sentiment.toFixed(2)}): ${synth.summary}`,
+        );
+      else if (skillCtx && showRawSkillBundle()) lines.push(`\n${skillCtx}`);
       const text = lines.join("\n");
       await callback?.({ text, actions: ["RESEARCH"] });
       return {
         text: `research ${symbol}`,
         success: true,
-        values: { symbol, priceUsd: s.priceUsd },
-        data: { actionName: "RESEARCH", symbol },
+        values: {
+          symbol,
+          priceUsd: s.priceUsd,
+          bias: verdict.bias,
+          confidence: verdict.confidence,
+          ...(verdict.targetPrice !== undefined
+            ? { targetPrice: verdict.targetPrice }
+            : {}),
+        },
+        data: { actionName: "RESEARCH", symbol, timeframe: requestedTf, verdict },
       };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -192,7 +246,17 @@ export const researchAction: Action = {
       {
         name: "Astraeus",
         content: {
-          text: "🔎 CAKE research (CoinMarketCap)\n• Price: …",
+          text: "🔎 CAKE research (CoinMarketCap)\n• Price: …\n• Technicals (1h/4h/1D/1W): …\n• Verdict: 🟢 Bullish · confidence 72% · target $… (+4.5%)",
+          actions: ["RESEARCH"],
+        },
+      },
+    ],
+    [
+      { name: "{{name1}}", content: { text: "research SIREN on daily" } },
+      {
+        name: "Astraeus",
+        content: {
+          text: "🔎 SIREN research (CoinMarketCap)\n• Price: …\n• Technicals (1D):\n   • RSI14: 13 (oversold)\n   • MACD: bearish (-0.26%)\n   • EMA12 / EMA26: … (downtrend)\n   • Price vs EMA26: -2.4% (below)\n   • Volatility: 8.3% avg move/candle\n• Verdict: 🔴 Bearish · confidence …",
           actions: ["RESEARCH"],
         },
       },

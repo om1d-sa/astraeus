@@ -15,12 +15,44 @@ import { gatherForecastEnrichment } from "../skills/options-forecast/enrich";
 import { parseTimeframe } from "../actions/forecast";
 import { quoteX402 } from "../exec/x402";
 import { checkGuardrails, shouldTakeProfit } from "../config/risk";
+import { bscContractFor } from "../config/bsc-contracts";
+import type { Timeframe } from "../data/cmc";
+import {
+  MIN_POINTS,
+  readingFromTechnicals,
+  synthesizeVerdict,
+  type Bias,
+} from "../skills/research/timeframes";
+import {
+  resolveTrendingWatchlist,
+  trendingSearchCap,
+} from "../actions/trending";
+import {
+  altcoinMinConfidencePct,
+  altcoinQualifies,
+  altcoinResearchTimeframe,
+  altcoinRetryMs,
+  altcoinScanDepth,
+  altcoinTradesEnabled,
+  altcoinUseContract,
+  shouldDivertToAltcoins,
+  type AltcoinCandidate,
+} from "../skills/altcoin-scan/scan";
+import {
+  MAX_WITHDRAW_TIMELINE_MS,
+  customWithdrawTimelineMs,
+  withdrawTimelineMs,
+} from "../skills/withdraw/timeline";
+import { isStable } from "../config/tokens";
 
 const num = (key: string, fallback: number): number => {
   const v = process.env[key];
   const n = v ? Number(v) : NaN;
   return Number.isFinite(n) ? n : fallback;
 };
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((r) => setTimeout(r, ms));
 
 /** Compact human duration: "now", "45s", "12m", "4h 12m". */
 const fmtDur = (ms: number): string => {
@@ -42,6 +74,8 @@ export interface ScheduleState {
   retryStep?: number;
   /** Epoch ms the next Track-1 heartbeat is due. */
   qualifyNextAt?: number;
+  /** Peak portfolio equity (USD) seen so far — anchors the drawdown cap across restarts. */
+  peakEquityUsd?: number;
 }
 
 /**
@@ -78,14 +112,6 @@ export function isLiveTradeBlocked(
   return (blockToggle ?? "true").toLowerCase() !== "false";
 }
 
-/** How long a forecast-driven position is held before auto-close (= the forecast horizon). */
-const TIMEFRAME_MS: Record<ForecastTimeframe, number> = {
-  hourly: 3_600_000, // 1h
-  fourHourly: 14_400_000, // 4h
-  daily: 86_400_000, // 24h
-  weekly: 604_800_000, // 7d
-};
-
 export interface OpenForecastTrade {
   id: string;
   asset: string;
@@ -95,6 +121,8 @@ export interface OpenForecastTrade {
   boughtAmount: number;
   openedAt: number;
   closeAt: number;
+  /** BSC contract address (altcoin positions) so the live sell-back routes by address. */
+  address?: string;
 }
 
 export interface ForecastTradeResult {
@@ -109,6 +137,12 @@ export interface ForecastTradeResult {
   txHash?: string;
   reason?: string;
   forecastReasoning?: string;
+  /** The asset actually bought — ETH normally, or a BSC altcoin when the cycle diverted. */
+  tradedAsset?: string;
+  /** True when the Track-1 high-risk altcoin scan ran in place of the ETH decision. */
+  diverted?: boolean;
+  /** How many trending altcoins were researched during a diverted cycle. */
+  altcoinScanned?: number;
 }
 
 /** One open position marked to market — entry vs current price, unrealized PnL. */
@@ -140,6 +174,24 @@ export interface PositionsReport {
   anyPriced: boolean;
 }
 
+/**
+ * Status of the standalone Track-1 qualifying-trade heartbeat (the "safety loop"):
+ * a guaranteed buy+sell round-trip on a fixed cadence so the agent always logs a
+ * daily competition trade, INDEPENDENT of whether the forecast loop opens anything.
+ */
+export interface Track1SafetyLoopStatus {
+  /** Whether the heartbeat is turned on (TRACK1_QUALIFY_ENABLED). */
+  enabled: boolean;
+  /** Round-trip size per heartbeat (USD) — independent of the loop's trade size. */
+  tradeSizeUsd: number;
+  /** Heartbeat cadence (ms). */
+  intervalMs: number;
+  /** When the next heartbeat is due (epoch ms), if one is scheduled. */
+  nextRunAt?: number;
+  /** True while a qualifying round-trip is currently executing. */
+  inFlight: boolean;
+}
+
 export interface TradingStatus {
   running: boolean;
   symbols: string[];
@@ -149,6 +201,10 @@ export interface TradingStatus {
   /** Take-profit: close a position early once up this % (0/off when disabled). */
   takeProfitPct: number;
   takeProfitEnabled: boolean;
+  /** Custom withdraw (auto-close) timeline override for the MAIN loop, ms (undefined = timeframe default). */
+  withdrawTimelineMainMs?: number;
+  /** Custom withdraw (auto-close) timeline override for the ALT loop, ms (undefined = timeframe default). */
+  withdrawTimelineAltMs?: number;
   /** Base (happy-path) timeframe used for each scheduled trade. */
   baseTimeframe: ForecastTimeframe;
   /** Current escalation depth (0 = base cadence; ≥1 = on the retry ladder). */
@@ -159,6 +215,8 @@ export interface TradingStatus {
   portfolio?: Portfolio;
   openTrades: OpenForecastTrade[];
   lastResult?: ForecastTradeResult;
+  /** The standalone Track-1 qualifying-trade heartbeat ("safety loop"). */
+  track1: Track1SafetyLoopStatus;
 }
 
 /** One line of a TRADE_DIAGNOSTICS report. */
@@ -193,6 +251,11 @@ export class TradingService extends Service {
   private qualifyTimer?: ReturnType<typeof setTimeout>;
   /** True while a qualifying round-trip is executing — prevents concurrent/double trades. */
   private qualifyInFlight = false;
+  /** A qualifying BUY landed but its sell-back failed: the ETH is parked in the wallet and the
+   *  NEXT cycle's pre-qualify flatten COMPLETES the round-trip (→ interval sleep) instead of
+   *  opening a fresh buy. This is what stops the buy→fail-sell→buy churn. In-memory only — a
+   *  restart loses it, but the startup stray-ETH sweep still flattens the orphan. */
+  private qualifyBuyPending = false;
   /** True while a trading-loop cycle (forecast+trade) runs — the qualifier waits for it. */
   private cycleInFlight = false;
   /** Periodic take-profit monitor — closes a position early once it's up takeProfitPct. */
@@ -211,6 +274,8 @@ export class TradingService extends Service {
   private qualifyNextAt?: number;
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly forecastTrades = new Map<string, OpenForecastTrade>();
+  /** Per-position close-retry counter (in-memory) so a failed sell isn't dropped forever. */
+  private readonly closeRetries = new Map<string, number>();
   private lastResult?: ForecastTradeResult;
   /** Where open positions are persisted so they survive an agent restart. */
   private readonly statePath: string;
@@ -228,6 +293,12 @@ export class TradingService extends Service {
   /** Take-profit: close a position early once it's up this %, locking in gains. */
   readonly takeProfitEnabled: boolean;
   readonly takeProfitPct: number;
+  /** Custom withdraw (auto-close) timeline override for the MAIN loop, ms — undefined = use
+   *  the forecast-timeframe default (AUTONOMOUS_WITHDRAW_TIMELINE_ENABLED + _TIMELINE). */
+  readonly withdrawTimelineMainMs?: number;
+  /** Custom withdraw (auto-close) timeline override for the ALT loop, ms — undefined = use the
+   *  forecast-timeframe default (TRACK1_ALTCOIN_WITHDRAW_TIMELINE_ENABLED + _TIMELINE). */
+  readonly withdrawTimelineAltMs?: number;
   /** 'live' = real on-chain swaps via TWAK; 'paper' = simulated. */
   readonly mode: "paper" | "live";
 
@@ -247,6 +318,10 @@ export class TradingService extends Service {
       (process.env.RISK_TAKE_PROFIT_ENABLED ?? "false").toLowerCase() ===
       "true";
     this.takeProfitPct = num("RISK_TAKE_PROFIT_PCT", 10);
+    // Custom withdraw timelines (ms) — snapshot the per-loop overrides for status/diagnostics;
+    // the hot path re-reads them live via withdrawTimelineMs() at each trade.
+    this.withdrawTimelineMainMs = customWithdrawTimelineMs("main");
+    this.withdrawTimelineAltMs = customWithdrawTimelineMs("alt");
     // Live trading requires an explicit opt-in. Until then, paper mode.
     this.mode =
       (process.env.ENABLE_LIVE_TRADING ?? "").toLowerCase() === "true"
@@ -266,6 +341,10 @@ export class TradingService extends Service {
               chain: "bsc",
               stableSymbol: "USDT",
               defaultSlippagePct: num("RISK_MAX_SLIPPAGE_BPS", 100) / 100,
+              // Single source of truth for contract-vs-symbol routing: the SAME
+              // TRACK1_ALTCOIN_USE_CONTRACT read the scan uses to gate the address,
+              // so the executor and the service can never disagree on it.
+              useContract: altcoinUseContract(),
             })
           : new PaperExecutor({
               startingCashUsd: this.startCashUsd,
@@ -288,6 +367,9 @@ export class TradingService extends Service {
     const service = new TradingService(runtime);
     // Recover any positions left open by a previous run before (re)starting the loop.
     service.reconcileOpenTrades();
+    // Flatten any ETH a prior Track-1 round-trip bought but failed to sell back (an orphan
+    // the position ledger doesn't track) so it can't sit unsold across restarts.
+    service.sweepStrayEthOnStartup();
     if (/\b(trade|auto|on|true)\b/i.test(process.env.AUTONOMOUS_MODE ?? "")) {
       // Boot auto-start RESUMES the persisted loop + heartbeat cadence (restart-safe).
       const r = service.startLoop(true);
@@ -378,6 +460,19 @@ export class TradingService extends Service {
       forecastReasoning: f.reasoning,
     };
 
+    // Track 1 — high-risk altcoin trades (opt-in). When enabled and the ETH forecast is
+    // BULLISH (up) or SIDEWAYS, divert this cycle: instead of the normal ETH decision (which
+    // would BUY on a confident UP and SKIP on sideways), hunt the trending BSC watchlist for
+    // a bullish altcoin and buy that. So with the toggle on, a would-be ETH buy is REPLACED
+    // by the altcoin hunt. Only ETH cycles divert (manual BTC/BNB are unaffected).
+    if (
+      asset === "ETH" &&
+      altcoinTradesEnabled() &&
+      shouldDivertToAltcoins(f.prediction.direction)
+    ) {
+      return this.scanAndTradeAltcoin(timeframe, base);
+    }
+
     // Trade only on a confident UP call: direction must be UP and conviction ≥ the
     // configured minimum (RISK_MIN_CONVICTION, 0–100). Forecast confidence is 0–1.
     const minConvictionPct = num("RISK_MIN_CONVICTION", 60);
@@ -444,7 +539,11 @@ export class TradingService extends Service {
 
     const id = `ft-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4).toString(36)}`;
     const boughtAmount = sizeUsd / price;
-    const closeAt = Date.now() + TIMEFRAME_MS[timeframe];
+    // Hold this MAIN-loop position for the custom withdraw timeline when switched on
+    // (AUTONOMOUS_WITHDRAW_TIMELINE_ENABLED + _TIMELINE), else the forecast-timeframe default.
+    // One value drives BOTH closeAt and the auto-close timer so they can never disagree.
+    const holdMs = withdrawTimelineMs("main", timeframe);
+    const closeAt = Date.now() + holdMs;
     this.forecastTrades.set(id, {
       id,
       asset,
@@ -462,7 +561,7 @@ export class TradingService extends Service {
         this.closeForecastTrade(id).catch((e) =>
           logger.error({ err: String(e) }, "forecast trade close failed"),
         );
-      }, TIMEFRAME_MS[timeframe]),
+      }, holdMs),
     );
 
     const r: ForecastTradeResult = {
@@ -488,6 +587,251 @@ export class TradingService extends Service {
     return r;
   }
 
+  /**
+   * Deterministic single-timeframe research read for one token — the "research feature"
+   * the altcoin scan runs per candidate. Pulls the token's live price + CMC technicals for
+   * `tf` and blends them into a bias/confidence via the same synthesizeVerdict core the
+   * RESEARCH card uses (no LLM, no skills → fast and credit-cheap for a tight scan loop).
+   * Returns a zero-confidence neutral when data is missing rather than throwing.
+   */
+  async researchToken(
+    symbol: string,
+    tf: Timeframe,
+  ): Promise<{ bias: Bias; confidence: number; priceUsd: number }> {
+    if (!this.provider) return { bias: "neutral", confidence: 0, priceUsd: 0 };
+    const [sigs, tech] = await Promise.all([
+      this.provider.getTokenSignals([symbol]).catch(() => []),
+      this.provider.getTimeframeTechnicals(symbol, tf).catch(() => undefined),
+    ]);
+    const priceUsd = sigs[0]?.priceUsd ?? 0;
+    if (!tech || tech.points < MIN_POINTS) {
+      return { bias: "neutral", confidence: 0, priceUsd };
+    }
+    const verdict = synthesizeVerdict(
+      [readingFromTechnicals(tf, tech)],
+      priceUsd,
+    );
+    return { bias: verdict.bias, confidence: verdict.confidence, priceUsd };
+  }
+
+  /**
+   * Track 1 — high-risk altcoin trades. Search the trending feed (filtered to the eligible
+   * BSC watchlist via resolveTrendingWatchlist, so buys can only land on the competition
+   * allowlist), research the top {@link altcoinScanDepth} tokens one at a time on the
+   * configured timeframe, and BUY the first whose research is bullish with confidence ≥
+   * {@link altcoinMinConfidencePct}. Opens a normal auto-closing forecast position (the live
+   * swap routes by the resolved BSC contract address). If none qualify, opens nothing and
+   * returns a DIVERTED no-trade result — the loop then retries after {@link altcoinRetryMs}.
+   */
+  async scanAndTradeAltcoin(
+    timeframe: ForecastTimeframe,
+    base: ForecastTradeResult,
+  ): Promise<ForecastTradeResult> {
+    if (!this.executor || !this.provider) {
+      const r = { ...base, diverted: true, reason: "service not initialized" };
+      this.lastResult = r;
+      return r;
+    }
+    const depth = altcoinScanDepth();
+    const minPct = altcoinMinConfidencePct();
+    const tf = altcoinResearchTimeframe();
+
+    // Trending → keep ONLY the eligible BSC watchlist symbols (TRACK1_TRENDING_WATCHLIST /
+    // the baked-in 146-token default). Filtering here is UNCONDITIONAL — it does NOT depend
+    // on TRACK1_TRENDING_WATCHLIST_FILTER (that toggle only governs the TRENDING display
+    // action); this is the hard guardrail that keeps altcoin buys on the eligible list.
+    const watchlist = resolveTrendingWatchlist("");
+    let candidates: string[] = [];
+    try {
+      const fetched = await this.provider.getTrending(trendingSearchCap());
+      candidates = fetched
+        .map((t) => (t.symbol ?? "").toUpperCase())
+        // Keep only eligible-watchlist symbols, and EXCLUDE the cash/stable leg and ETH:
+        // this loop exists to divert AWAY from ETH, so re-buying ETH defeats the purpose,
+        // and a stablecoin "long" (e.g. a degenerate USDT→USDT swap) is never a real trade.
+        .filter((s) => s && watchlist.has(s) && s !== "ETH" && !isStable(s));
+    } catch (e) {
+      const r = {
+        ...base,
+        diverted: true,
+        reason: `altcoin scan: trending fetch failed (${e instanceof Error ? e.message : String(e)})`,
+      };
+      this.lastResult = r;
+      return r;
+    }
+
+    // Research candidates in trending order; STOP at the first bullish ≥ minPct.
+    let scanned = 0;
+    let chosen: AltcoinCandidate | undefined;
+    for (const symbol of candidates.slice(0, depth)) {
+      scanned += 1;
+      let cand: AltcoinCandidate;
+      try {
+        const v = await this.researchToken(symbol, tf);
+        cand = {
+          symbol,
+          priceUsd: v.priceUsd,
+          bias: v.bias,
+          confidence: v.confidence,
+        };
+      } catch {
+        cand = { symbol, priceUsd: 0, bias: "neutral", confidence: 0 };
+      }
+      if (altcoinQualifies(cand, minPct)) {
+        chosen = cand;
+        break;
+      }
+    }
+
+    if (!chosen) {
+      const r: ForecastTradeResult = {
+        ...base,
+        traded: false,
+        diverted: true,
+        altcoinScanned: scanned,
+        reason:
+          scanned === 0
+            ? "altcoin scan: no trending tokens on the BSC watchlist right now — will retry"
+            : `altcoin scan: none of the top ${scanned} trending BSC altcoins were bullish ≥ ${minPct}% on ${tf} — will retry`,
+      };
+      this.lastResult = r;
+      return r;
+    }
+
+    // BSC contract for the live swap comes from the BAKED map (src/config/bsc-contracts.ts) —
+    // NO per-trade CMC call. This routes the swap by the exact on-chain address instead of the
+    // chain-ambiguous ticker (the bug behind generic altcoin symbols). Unmapped symbols
+    // (TON/H/IP/USDF — no canonical BSC token) → undefined → TWAK falls back to the ticker.
+    const address = altcoinUseContract()
+      ? bscContractFor(chosen.symbol)
+      : undefined;
+
+    const sizeUsd = this.tradeSizeUsd;
+    const price = chosen.priceUsd;
+    this.executor.mark?.({ [chosen.symbol]: price });
+    const pf = await this.executor.getPortfolio();
+    if (pf.cashUsd < sizeUsd) {
+      const r = {
+        ...base,
+        diverted: true,
+        altcoinScanned: scanned,
+        reason: `altcoin scan: picked ${chosen.symbol} but cash $${pf.cashUsd.toFixed(2)} < $${sizeUsd}`,
+      };
+      this.lastResult = r;
+      return r;
+    }
+
+    // Same hard guardrails as the ETH path (drawdown halt + daily trade/volume caps).
+    this.rolloverDay();
+    this.peakEquityUsd = Math.max(this.peakEquityUsd, pf.totalValueUsd);
+    const drawdownPct =
+      this.peakEquityUsd > 0
+        ? ((this.peakEquityUsd - pf.totalValueUsd) / this.peakEquityUsd) * 100
+        : 0;
+    const guard = checkGuardrails({
+      conviction: chosen.confidence * 100,
+      tradeUsd: sizeUsd,
+      currentDrawdownPct: drawdownPct,
+      tradesToday: this.tradesToday,
+      volumeTodayUsd: this.volumeTodayUsd,
+      tokenSymbol: chosen.symbol,
+      isTokenEligible: true, // already filtered to the eligible BSC watchlist
+    });
+    if (!guard.allowed) {
+      logger.warn(
+        { reason: guard.reason, symbol: chosen.symbol },
+        "altcoin trade blocked by risk guardrail",
+      );
+      const r = {
+        ...base,
+        diverted: true,
+        altcoinScanned: scanned,
+        reason: `altcoin scan: ${chosen.symbol} blocked — guardrail: ${guard.reason}`,
+      };
+      this.lastResult = r;
+      return r;
+    }
+
+    const swap = await this.executor.swap({
+      fromSymbol: "USDT",
+      toSymbol: chosen.symbol,
+      toAddress: address,
+      amountUsd: sizeUsd,
+      maxSlippageBps: num("RISK_MAX_SLIPPAGE_BPS", 100),
+    });
+    if (!swap.ok) {
+      const r = {
+        ...base,
+        ok: false,
+        diverted: true,
+        altcoinScanned: scanned,
+        reason: `altcoin scan: ${chosen.symbol} buy failed — ${swap.error}`,
+      };
+      this.lastResult = r;
+      return r;
+    }
+
+    const id = `ft-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4).toString(36)}`;
+    const boughtAmount = sizeUsd / price;
+    // Hold this ALT-loop position for the custom withdraw timeline when switched on
+    // (TRACK1_ALTCOIN_WITHDRAW_TIMELINE_ENABLED + _TIMELINE), else the forecast-timeframe
+    // default — independent of the main loop's override. One value drives closeAt + the timer.
+    const holdMs = withdrawTimelineMs("alt", timeframe);
+    const closeAt = Date.now() + holdMs;
+    this.forecastTrades.set(id, {
+      id,
+      asset: chosen.symbol,
+      timeframe,
+      sizeUsd,
+      entryPrice: price,
+      boughtAmount,
+      openedAt: Date.now(),
+      closeAt,
+      address,
+    });
+    this.persistOpenTrades();
+    this.timers.set(
+      id,
+      setTimeout(() => {
+        this.closeForecastTrade(id).catch((e) =>
+          logger.error({ err: String(e) }, "altcoin trade close failed"),
+        );
+      }, holdMs),
+    );
+
+    this.tradesToday += 1; // count toward the daily guardrail caps
+    this.volumeTodayUsd += sizeUsd;
+    const r: ForecastTradeResult = {
+      ...base,
+      traded: true,
+      diverted: true,
+      tradedAsset: chosen.symbol,
+      direction: "up",
+      confidence: chosen.confidence,
+      entryPrice: price,
+      sizeUsd,
+      closeAt,
+      txHash: swap.txHash,
+      altcoinScanned: scanned,
+      reason: `Track 1 high-risk altcoin: bought ${chosen.symbol} (research bullish ${(chosen.confidence * 100).toFixed(0)}% on ${tf})`,
+    };
+    this.lastResult = r;
+    logger.info(
+      {
+        id,
+        symbol: chosen.symbol,
+        address,
+        entry: price,
+        sizeUsd,
+        confidence: chosen.confidence,
+        scanned,
+        closeAt: new Date(closeAt).toISOString(),
+      },
+      "altcoin trade OPENED (Track 1 high-risk)",
+    );
+    return r;
+  }
+
   /** Close (sell) a forecast position back to USDT at the current price. */
   private async closeForecastTrade(id: string): Promise<void> {
     const t = this.forecastTrades.get(id);
@@ -502,37 +846,102 @@ export class TradingService extends Service {
     this.timers.delete(id);
     this.persistOpenTrades();
 
-    let price = t.entryPrice;
-    try {
-      const sig = await this.provider.getTokenSignals([t.asset]);
-      price = sig[0]?.priceUsd || t.entryPrice;
-    } catch {
-      /* keep entry price as fallback */
+    // The CURRENT market price at the sell-off moment — NEVER the entry price we bought at.
+    // CMC's quote service is intermittently flaky, so RETRY the live quote several times
+    // (CLOSE_PRICE_RETRIES, default 5) before giving up on it — only then do we fall back to
+    // the on-chain valuation (and the entry price as a last resort). Applies to ETH and
+    // altcoin closes alike (this is the shared close path).
+    let price = 0;
+    const priceRetries = Math.max(1, Math.trunc(num("CLOSE_PRICE_RETRIES", 5)));
+    const priceRetryMs = num("CLOSE_PRICE_RETRY_MS", 1500);
+    for (let attempt = 1; attempt <= priceRetries; attempt++) {
+      try {
+        const sig = await this.provider.getTokenSignals([t.asset]);
+        price = sig[0]?.priceUsd ?? 0;
+      } catch {
+        price = 0;
+      }
+      if (price > 0) break;
+      if (attempt < priceRetries) await sleep(priceRetryMs);
     }
-    this.executor.mark?.({ [t.asset]: price });
 
-    // How much of the asset to sell. `boughtAmount` is the IDEAL fill (sizeUsd/price);
-    // the wallet actually received LESS (the buy paid a DEX fee + slippage), so selling
-    // `boughtAmount` worth would request MORE than is held and a live swap would reject
-    // it for insufficient balance — leaving the position stuck open. So cap at the real
-    // on-chain balance and shave a small haircut to absorb any price tick / rounding
-    // between this read and the swap. (Paper caps internally; this protects live/TWAK.)
-    let sellAmount = t.boughtAmount;
+    // Read the position LIVE from the wallet on-chain: how much of the token we actually hold
+    // and what it's worth RIGHT NOW. `boughtAmount` is the IDEAL fill (sizeUsd/price); the
+    // wallet received LESS (the buy paid a DEX fee + slippage), so selling `boughtAmount` worth
+    // would request MORE than is held and a live swap would reject it for insufficient balance
+    // — leaving the position stuck open. So cap at the real on-chain balance.
+    let held = 0;
+    let heldValueUsd = 0;
     try {
       const pf = await this.executor.getPortfolio();
-      const held = pf.holdings.find((h) => h.symbol === t.asset)?.amount ?? 0;
-      if (held > 0) sellAmount = Math.min(t.boughtAmount, held);
+      const h = pf.holdings.find((x) => x.symbol === t.asset);
+      held = h?.amount ?? 0;
+      heldValueUsd = h?.valueUsd ?? 0;
     } catch {
       /* no balance read — fall back to boughtAmount (still haircut-shaved below) */
     }
+
+    // Price used to SIZE the sell, in priority order: the live market quote → the position's
+    // CURRENT on-chain worth (wallet value ÷ amount) at this moment → only as a last resort,
+    // the entry price. The buy price is never the primary basis — the exit is sized off what
+    // the position is worth NOW, checked on-chain, not what we paid for it.
+    if (!(price > 0) && held > 0 && heldValueUsd > 0)
+      price = heldValueUsd / held;
+    if (!(price > 0)) price = t.entryPrice;
+    this.executor.mark?.({ [t.asset]: price });
+
+    // Cap the sell at the real on-chain balance and shave a small haircut to absorb any price
+    // tick / rounding between this read and the swap. (Paper caps internally; this protects live.)
+    const sellAmount =
+      held > 0 ? Math.min(t.boughtAmount, held) : t.boughtAmount;
     const haircut = 1 - num("CLOSE_SELL_HAIRCUT_BPS", 50) / 10_000; // default 0.5%
     const swap = await this.executor.swap({
       fromSymbol: t.asset,
       toSymbol: "USDT",
+      // Route altcoin sell-backs by contract address (tickers collide across chains); ETH
+      // has no stored address so this is undefined and TWAK falls back to the symbol.
+      fromAddress: t.address,
       amountUsd: sellAmount * price * haircut,
       maxSlippageBps: num("RISK_MAX_SLIPPAGE_BPS", 100),
     });
     const pnlUsd = (price - t.entryPrice) * sellAmount;
+
+    if (!swap.ok) {
+      // The sell did NOT execute — the asset is still in the wallet. The position was
+      // removed up-front (to block a double-sell); leaving it gone ORPHANS real funds
+      // (we'd think we're flat but still hold it). Re-track it and re-arm a bounded
+      // retry. swap() already retries transient TWAK blips internally, so a failure
+      // here is usually a real revert/funds issue — cap the retries to avoid a loop;
+      // once exhausted it stays tracked for close-all / restart-reconcile to handle.
+      const attempts = (this.closeRetries.get(id) ?? 0) + 1;
+      const maxAttempts = Math.max(1, num("CLOSE_MAX_RETRIES", 5));
+      this.forecastTrades.set(id, t);
+      this.persistOpenTrades();
+      if (attempts < maxAttempts) {
+        this.closeRetries.set(id, attempts);
+        const retryMs = num("CLOSE_RETRY_MS", 60_000);
+        this.timers.set(
+          id,
+          setTimeout(() => {
+            this.closeForecastTrade(id).catch((e) =>
+              logger.error(
+                { err: String(e), id },
+                "forecast trade close retry failed",
+              ),
+            );
+          }, retryMs),
+        );
+      } else {
+        this.closeRetries.delete(id);
+      }
+      logger.error(
+        { id, err: swap.error, attempt: attempts },
+        "forecast trade close FAILED — re-tracked to avoid orphaning funds",
+      );
+      return;
+    }
+    this.closeRetries.delete(id);
+
     logger.info(
       {
         id,
@@ -654,13 +1063,18 @@ export class TradingService extends Service {
         );
       } else {
         rearmed += 1;
+        // Clamp the re-armed delay to the 32-bit setTimeout ceiling: a far-future closeAt
+        // (e.g. a long custom withdraw timeline) would otherwise overflow and fire instantly.
         this.timers.set(
           t.id,
-          setTimeout(() => {
-            this.closeForecastTrade(t.id).catch((e) =>
-              logger.error({ err: String(e) }, "forecast trade close failed"),
-            );
-          }, remaining),
+          setTimeout(
+            () => {
+              this.closeForecastTrade(t.id).catch((e) =>
+                logger.error({ err: String(e) }, "forecast trade close failed"),
+              );
+            },
+            Math.min(remaining, MAX_WITHDRAW_TIMELINE_MS),
+          ),
         );
       }
     }
@@ -695,6 +1109,17 @@ export class TradingService extends Service {
     this.loopActive = true;
     this.retryStep = 0;
     const saved = resume ? this.loadSchedule() : {};
+
+    // Restore the historical equity peak so the drawdown cap survives a restart — without
+    // this the peak resets to 0 and the agent reports 0% drawdown until equity climbs to a
+    // fresh peak, silently disabling the DQ-protection guardrail after every restart.
+    if (
+      resume &&
+      typeof saved.peakEquityUsd === "number" &&
+      saved.peakEquityUsd > 0
+    ) {
+      this.peakEquityUsd = saved.peakEquityUsd;
+    }
 
     // Main loop: resume the persisted cadence (catch up if a cycle came due while we
     // were down; otherwise wait the remainder). Fresh start / no saved time → run now.
@@ -773,29 +1198,44 @@ export class TradingService extends Service {
   }
 
   /**
-   * Take-profit monitor — the OPPOSITE of the drawdown halt. Marks the current ETH
-   * price and closes EARLY any open position whose unrealized gain has reached
-   * takeProfitPct, locking in the profit instead of waiting out the timeframe.
-   * Best-effort: never throws, never blocks the loop.
+   * Take-profit monitor — the OPPOSITE of the drawdown halt. Closes EARLY any open
+   * position whose unrealized gain has reached takeProfitPct, locking in the profit
+   * instead of waiting out the timeframe. Best-effort: never throws, never blocks the loop.
+   *
+   * Each position is priced against its OWN asset (an altcoin must be valued at the
+   * altcoin's price, never ETH's) — batched into one quotes call for the distinct held
+   * assets. An asset whose price can't be read is left untouched (we don't act blind).
    */
   async checkTakeProfit(): Promise<number> {
     if (!this.takeProfitEnabled || !this.provider || !this.executor) return 0;
     if (this.forecastTrades.size === 0) return 0;
-    let price = 0;
+    const assets = [
+      ...new Set([...this.forecastTrades.values()].map((t) => t.asset)),
+    ];
+    const prices: Record<string, number> = {};
     try {
-      const sig = await this.provider.getTokenSignals(["ETH"]);
-      price = sig[0]?.priceUsd ?? 0;
+      const sigs = await this.provider.getTokenSignals(assets);
+      for (const s of sigs)
+        if (s?.symbol && s.priceUsd > 0) prices[s.symbol] = s.priceUsd;
     } catch {
-      return 0; // no price → don't act
+      return 0; // no prices → don't act
     }
-    if (price <= 0) return 0;
-    this.executor.mark?.({ ETH: price });
+    if (Object.keys(prices).length === 0) return 0;
+    this.executor.mark?.(prices);
     let closed = 0;
     for (const [id, t] of [...this.forecastTrades]) {
+      const price = prices[t.asset];
+      if (!(price > 0)) continue; // couldn't price this asset → leave the position be
       if (shouldTakeProfit(t.entryPrice, price, this.takeProfitPct)) {
         const gainPct = ((price - t.entryPrice) / t.entryPrice) * 100;
         logger.info(
-          { id, entry: t.entryPrice, price, gainPct: gainPct.toFixed(1) },
+          {
+            id,
+            asset: t.asset,
+            entry: t.entryPrice,
+            price,
+            gainPct: gainPct.toFixed(1),
+          },
           `take-profit hit (+${this.takeProfitPct}%) — closing position early`,
         );
         await this.closeForecastTrade(id).catch((e) =>
@@ -814,10 +1254,12 @@ export class TradingService extends Service {
     this.nextTimeframe = undefined;
 
     let success = false;
+    let diverted = false;
     this.cycleInFlight = true; // the qualifying heartbeat defers while this runs
     try {
       const r = await this.forecastAndTrade(timeframe, this.autoCmc);
       success = r.traded === true;
+      diverted = r.diverted === true;
     } catch (e) {
       logger.error({ err: String(e) }, "autonomous forecast-trade failed");
       success = false; // treat an error as unsuccessful → retry on the ladder
@@ -833,6 +1275,14 @@ export class TradingService extends Service {
       this.retryStep = 0;
       nextTf = this.autoTimeframe;
       delayMs = this.intervalMs;
+    } else if (diverted) {
+      // The Track-1 altcoin scan ran but opened nothing (no top-N candidate qualified, or a
+      // cash/guardrail block). Re-forecast ETH at the base timeframe after the altcoin retry
+      // delay ("try again later", default 1h) — it's not an ETH miss, so don't walk the ETH
+      // shorter-timeframe retry ladder.
+      this.retryStep = 0;
+      nextTf = this.autoTimeframe;
+      delayMs = altcoinRetryMs();
     } else {
       this.retryStep += 1;
       nextTf = this.retryStep === 1 ? "fourHourly" : "hourly";
@@ -883,6 +1333,7 @@ export class TradingService extends Service {
         loopTimeframe: this.nextTimeframe,
         retryStep: this.retryStep,
         qualifyNextAt: this.qualifyNextAt,
+        peakEquityUsd: this.peakEquityUsd,
       };
       writeFileSync(this.schedulePath, JSON.stringify(state, null, 2));
     } catch (e) {
@@ -941,19 +1392,101 @@ export class TradingService extends Service {
   }
 
   /**
+   * USD value of ETH the wallet holds BEYOND what the position ledger tracks — i.e. a stray
+   * orphan (e.g. a Track-1 buy whose sell-back leg failed). Priced amount × live price, since
+   * TWAK reports no valueUsd for non-stable tokens. Open forecast positions are subtracted so
+   * this never counts a legitimately-held main-loop position as stray.
+   */
+  private async strayEthUsd(price: number): Promise<number> {
+    if (!this.executor || price <= 0) return 0;
+    const pf = await this.executor.getPortfolio();
+    const walletEth = pf.holdings.find((h) => h.symbol === "ETH")?.amount ?? 0;
+    const trackedEth = [...this.forecastTrades.values()]
+      .filter((t) => t.asset === "ETH")
+      .reduce((s, t) => s + t.boughtAmount, 0);
+    return Math.max(0, walletEth - trackedEth) * price;
+  }
+
+  /**
+   * Sell back stray ETH (see {@link strayEthUsd}) to USDT — the self-heal for a Track-1
+   * round-trip whose sell-back failed and left the bought ETH stranded. Sells ONLY the
+   * excess over tracked positions (so it can never dump an open main-loop position), sized
+   * by amount × price with the close haircut so a live swap can't over-request, and is a
+   * no-op below a dust floor (TRACK1_ETH_DUST_USD). Best-effort; returns what it sold.
+   */
+  private async flattenStrayEth(
+    price: number,
+    reason: string,
+  ): Promise<{ sold: boolean; usd: number }> {
+    if (!this.executor || price <= 0) return { sold: false, usd: 0 };
+    let strayUsd = 0;
+    try {
+      strayUsd = await this.strayEthUsd(price);
+    } catch (e) {
+      logger.warn({ err: String(e) }, "flattenStrayEth: portfolio read failed");
+      return { sold: false, usd: 0 };
+    }
+    if (strayUsd < num("TRACK1_ETH_DUST_USD", 0.5))
+      return { sold: false, usd: 0 };
+    const haircut = 1 - num("CLOSE_SELL_HAIRCUT_BPS", 50) / 10_000;
+    const sellUsd = strayUsd * haircut;
+    const r = await this.executor.swap({
+      fromSymbol: "ETH",
+      toSymbol: "USDT",
+      amountUsd: sellUsd,
+      maxSlippageBps: num("RISK_MAX_SLIPPAGE_BPS", 100),
+    });
+    if (!r.ok) {
+      logger.error(
+        { err: r.error, strayUsd: strayUsd.toFixed(2), reason },
+        "flattenStrayEth: sell-back FAILED — ETH still held, will retry",
+      );
+      return { sold: false, usd: 0 };
+    }
+    logger.info(
+      { soldUsd: sellUsd.toFixed(2), txHash: r.txHash, reason },
+      "flattenStrayEth: sold stray ETH back to USDT",
+    );
+    return { sold: true, usd: sellUsd };
+  }
+
+  /**
+   * One-shot startup flatten of stray ETH a prior failed Track-1 sell-back left in the
+   * wallet (an orphan the ledger doesn't track). Live-only (the paper executor self-
+   * reconciles); fire-and-forget so boot is never blocked on the network. Toggle with
+   * TRACK1_FLATTEN_STRAY (default on).
+   */
+  private sweepStrayEthOnStartup(): void {
+    if ((process.env.TRACK1_FLATTEN_STRAY ?? "true").toLowerCase() !== "true")
+      return;
+    if (this.mode !== "live" || !this.provider || !this.executor) return;
+    void (async () => {
+      try {
+        const sig = await this.provider!.getTokenSignals(["ETH"]);
+        const price = sig[0]?.priceUsd ?? 0;
+        if (price > 0) await this.flattenStrayEth(price, "startup sweep");
+      } catch (e) {
+        logger.warn({ err: String(e) }, "startup stray-ETH sweep failed");
+      }
+    })();
+  }
+
+  /**
    * Guaranteed competition round-trip of TRACK1_QUALIFY_TRADE_USD ($1.5 by default —
    * independent of the loop's RISK_MAX_TRADE_USD) that registers a Track-1 trade with
-   * ~zero net market exposure (cost = fees + slippage). Fully self-contained and
-   * INDEPENDENT of the trading loop: it never reads/writes the loop's open-position
-   * map, so a successful main-loop trade never cancels it.
+   * ~zero net market exposure (cost = fees + slippage). It reads the open-position ledger
+   * ONLY to tell its own ETH apart from a main-loop position (via {@link strayEthUsd}); it
+   * never opens/closes a tracked position.
    *
    * Direction is chosen from what's available so the heartbeat still lands EVEN WHEN
    * the main loop has deployed the USDT cash into an open ETH position:
-   *   - USDT cash ≥ size → buy ETH then sell it straight back (default).
-   *   - else ETH held ≥ size → sell that much ETH then immediately rebuy it.
-   * Either way the portfolio returns to its starting allocation. Returns whether it
-   * landed; the caller ({@link runQualifyCycle}) reschedules (interval on success,
-   * retry on failure).
+   *   - USDT cash ≥ size → buy ETH then sell exactly that ETH straight back (default).
+   *   - else ETH (amount × live price) ≥ size → sell that much ETH then rebuy it.
+   * The sell-back is sized off the ETH the wallet ACTUALLY received (NOT TWAK's valueUsd,
+   * which is 0 for ETH) and capped, so it can never over-request and strand the buy. Any
+   * stray ETH from a prior failed close is flattened first. Returns whether a clean
+   * round-trip landed; the caller ({@link runQualifyCycle}) reschedules (interval on
+   * success, short retry on failure — the pre-clean stops the retry from accumulating ETH).
    */
   private async doQualifyingTrade(): Promise<boolean> {
     if (!this.executor || !this.provider) return false;
@@ -961,6 +1494,8 @@ export class TradingService extends Service {
     this.qualifyInFlight = true;
     const sizeUsd = this.qualifyTradeSizeUsd;
     const slippage = num("RISK_MAX_SLIPPAGE_BPS", 100);
+    const haircut = 1 - num("CLOSE_SELL_HAIRCUT_BPS", 50) / 10_000; // default 0.5%
+    const dustUsd = num("TRACK1_ETH_DUST_USD", 0.5);
     try {
       let price = 0;
       try {
@@ -974,71 +1509,165 @@ export class TradingService extends Service {
         return false;
       }
       this.executor.mark?.({ ETH: price });
+
+      // Clear any ETH a PRIOR round-trip bought but failed to sell back, BEFORE opening a new
+      // one, so orphans can never accumulate. If it still can't be cleared (e.g. TWAK down),
+      // do NOT stack a fresh buy on top of it — defer and keep retrying the flatten.
+      const cleanup = await this.flattenStrayEth(price, "pre-qualify cleanup");
+      const strayLeft = await this.strayEthUsd(price);
+
+      // A prior cycle's BUY may be waiting for its sell-back (qualifyBuyPending). The cleanup
+      // above IS that sell-back — so the moment the stray clears, the buy+sell round-trip is
+      // COMPLETE. Count it as the qualifying trade and sleep the full interval, instead of
+      // opening a brand-new round-trip. THIS is the fix for the buy→fail-sell→buy churn: a
+      // delayed sell-back that finally lands ENDS the round-trip, it doesn't start another.
+      if (this.qualifyBuyPending) {
+        if (strayLeft < dustUsd) {
+          this.qualifyBuyPending = false;
+          this.lastResult = {
+            ok: true,
+            traded: true,
+            timeframe: "hourly",
+            direction: "sideways",
+            sizeUsd,
+            reason:
+              "Track 1 qualifying round-trip completed (delayed sell-back landed)",
+          };
+          logger.info(
+            { soldUsd: cleanup.usd.toFixed(2) },
+            "Track 1 qualifying round-trip COMPLETED on retry (earlier BUY + sell-back now) — sleeping full interval",
+          );
+          return true; // → TRACK1_QUALIFY_INTERVAL_MS sleep; do NOT re-buy
+        }
+        logger.warn(
+          { strayUsd: strayLeft.toFixed(2) },
+          "Track 1 — pending sell-back still failing; will retry the SAME ETH (no new buy)",
+        );
+        return false;
+      }
+
+      // No buy pending: any stray here is an untracked orphan — clear it before opening a buy.
+      if (strayLeft >= dustUsd) {
+        logger.warn(
+          "Track 1 — stray ETH not yet flattened; deferring new round-trip until clear",
+        );
+        return false;
+      }
+
       const pf = await this.executor.getPortfolio();
-      const ethUsd = pf.holdings.find((h) => h.symbol === "ETH")?.valueUsd ?? 0;
+      // Price ETH ourselves (amount × price): TWAK reports NO valueUsd for non-stable tokens,
+      // so relying on valueUsd (always 0 for ETH) silently breaks the size check and the
+      // sell-back sizing — which is exactly what stranded the bought ETH.
+      const ethUsd =
+        (pf.holdings.find((h) => h.symbol === "ETH")?.amount ?? 0) * price;
 
-      // Pick the round-trip direction from available funds. Prefer spending USDT cash;
-      // fall back to the ETH the main loop is holding so the safety trade still lands.
-      const legs =
-        pf.cashUsd >= sizeUsd
-          ? ([
-              { fromSymbol: "USDT", toSymbol: "ETH" },
-              { fromSymbol: "ETH", toSymbol: "USDT" },
-            ] as const)
-          : ethUsd >= sizeUsd
-            ? ([
-                { fromSymbol: "ETH", toSymbol: "USDT" },
-                { fromSymbol: "USDT", toSymbol: "ETH" },
-              ] as const)
-            : undefined;
-      if (!legs) {
-        logger.warn(
-          { cashUsd: pf.cashUsd, ethUsd, sizeUsd },
-          "Track 1 qualifying trade — neither USDT cash nor ETH ≥ size; will retry",
+      if (pf.cashUsd >= sizeUsd) {
+        // BUY ETH (this leg IS the qualifying trade — it counts), then sell exactly it back.
+        const open = await this.executor.swap({
+          fromSymbol: "USDT",
+          toSymbol: "ETH",
+          amountUsd: sizeUsd,
+          maxSlippageBps: slippage,
+        });
+        if (!open.ok) {
+          logger.warn(
+            { err: open.error },
+            "Track 1 buy leg failed; will retry",
+          );
+          return false;
+        }
+        // Sell back exactly the ETH just received (= the new stray over tracked positions),
+        // capped at the real on-chain balance + haircut so the live swap can't over-request.
+        const flat = await this.flattenStrayEth(
+          price,
+          "qualify round-trip close",
         );
-        return false;
-      }
-
-      const open = await this.executor.swap({
-        fromSymbol: legs[0].fromSymbol,
-        toSymbol: legs[0].toSymbol,
-        amountUsd: sizeUsd,
-        maxSlippageBps: slippage,
-      });
-      if (!open.ok) {
-        logger.warn(
-          { err: open.error, leg: legs[0] },
-          "Track 1 qualifying first leg failed; will retry",
-        );
-        return false;
-      }
-      // Immediately reverse it to return to the starting allocation (minimize exposure).
-      const close = await this.executor.swap({
-        fromSymbol: legs[1].fromSymbol,
-        toSymbol: legs[1].toSymbol,
-        amountUsd: sizeUsd,
-        maxSlippageBps: slippage,
-      });
-      this.lastResult = {
-        ok: true,
-        traded: true,
-        timeframe: "hourly",
-        direction: "sideways",
-        sizeUsd,
-        reason: "Track 1 qualifying round-trip (guaranteed daily trade)",
-        txHash: open.txHash,
-      };
-      logger.info(
-        {
+        // Sell-back failed → park the ETH as a PENDING round-trip so the next cycle's flatten
+        // completes it (→ interval sleep) instead of stacking a fresh buy. Succeeded → clear.
+        this.qualifyBuyPending = !flat.sold;
+        this.lastResult = {
+          ok: true,
+          traded: true,
+          timeframe: "hourly",
+          direction: "sideways",
           sizeUsd,
-          startedFrom: legs[0].fromSymbol,
-          openTx: open.txHash,
-          closeTx: close.txHash,
-          closeOk: close.ok,
-        },
-        "Track 1 qualifying round-trip executed (competition daily-trade safety)",
+          reason: flat.sold
+            ? "Track 1 qualifying round-trip (guaranteed daily trade)"
+            : "Track 1 qualifying BUY landed; sell-back pending — will retry",
+          txHash: open.txHash,
+        };
+        logger.info(
+          {
+            sizeUsd,
+            openTx: open.txHash,
+            soldBack: flat.sold,
+            soldUsd: flat.usd.toFixed(2),
+          },
+          flat.sold
+            ? "Track 1 qualifying round-trip executed (buy + sell-back)"
+            : "Track 1 qualifying BUY executed; SELL-BACK FAILED — will flatten on retry",
+        );
+        // Success only when the round-trip is flat. If the sell-back failed, retry soon —
+        // the pre-clean above flattens the stray ETH first, so the retry never stacks a buy.
+        return flat.sold;
+      }
+
+      if (ethUsd >= sizeUsd) {
+        // Cash-poor but holding ETH: SELL first (the qualifying trade), then rebuy to restore.
+        const sellUsd = Math.min(sizeUsd, ethUsd) * haircut;
+        const open = await this.executor.swap({
+          fromSymbol: "ETH",
+          toSymbol: "USDT",
+          amountUsd: sellUsd,
+          maxSlippageBps: slippage,
+        });
+        if (!open.ok) {
+          logger.warn(
+            { err: open.error },
+            "Track 1 sell leg failed; will retry",
+          );
+          return false;
+        }
+        const rebuy = await this.executor.swap({
+          fromSymbol: "USDT",
+          toSymbol: "ETH",
+          amountUsd: sellUsd,
+          maxSlippageBps: slippage,
+        });
+        this.lastResult = {
+          ok: true,
+          traded: true,
+          timeframe: "hourly",
+          direction: "sideways",
+          sizeUsd: sellUsd,
+          reason: rebuy.ok
+            ? "Track 1 qualifying round-trip (sell then rebuy)"
+            : "Track 1 qualifying SELL landed; rebuy FAILED — ETH not restored",
+          txHash: open.txHash,
+        };
+        // The SELL is the qualifying trade and it already succeeded, so the heartbeat is
+        // satisfied EITHER WAY — return true so a retry can't re-sell and compound the
+        // imbalance. But a failed rebuy leaves the wallet short ETH / long USDT, which the
+        // stray-ETH sweep can't fix (it only sheds EXCESS ETH), so surface it loudly.
+        if (rebuy.ok) {
+          logger.info(
+            { sizeUsd: sellUsd, sellTx: open.txHash, rebuyTx: rebuy.txHash },
+            "Track 1 qualifying round-trip executed (sell + rebuy)",
+          );
+        } else {
+          logger.error(
+            { sizeUsd: sellUsd, sellTx: open.txHash, rebuyErr: rebuy.error },
+            "Track 1 qualifying SELL executed; REBUY FAILED — wallet left short ETH, needs reconcile",
+          );
+        }
+        return true;
+      }
+
+      logger.warn(
+        { cashUsd: pf.cashUsd, ethUsd, sizeUsd },
+        "Track 1 qualifying trade — neither USDT cash nor ETH ≥ size; will retry",
       );
-      return true;
+      return false;
     } catch (e) {
       logger.error(
         { err: String(e) },
@@ -1081,6 +1710,35 @@ export class TradingService extends Service {
       // In live mode a TWAK balance error must not break the whole status report.
       logger.warn({ err: String(e) }, "getStatus: portfolio fetch failed");
     }
+    // TWAK reports no USD value for non-stable tokens (valueUsd = 0), so a live ETH holding
+    // shows "$0.00" and equity is understated. Price the unvalued holdings ourselves
+    // (amount × live price) so status reflects what's really in the wallet.
+    if (portfolio && this.mode === "live" && this.provider) {
+      const unpriced = portfolio.holdings.filter(
+        (h) => h.amount > 0 && (!h.valueUsd || h.valueUsd <= 0),
+      );
+      if (unpriced.length) {
+        try {
+          const sigs = await this.provider.getTokenSignals(
+            unpriced.map((h) => h.symbol),
+          );
+          const px: Record<string, number> = {};
+          for (const s of sigs)
+            if (s?.symbol && s.priceUsd > 0) px[s.symbol] = s.priceUsd;
+          for (const h of portfolio.holdings)
+            if ((!h.valueUsd || h.valueUsd <= 0) && px[h.symbol])
+              h.valueUsd = h.amount * px[h.symbol];
+          portfolio.totalValueUsd =
+            portfolio.cashUsd +
+            portfolio.holdings.reduce((s, h) => s + h.valueUsd, 0);
+        } catch (e) {
+          logger.warn(
+            { err: String(e) },
+            "getStatus: live holding valuation failed",
+          );
+        }
+      }
+    }
     return {
       running: this.running,
       symbols: this.symbols,
@@ -1089,6 +1747,8 @@ export class TradingService extends Service {
       tradeSizeUsd: this.tradeSizeUsd,
       takeProfitPct: this.takeProfitPct,
       takeProfitEnabled: this.takeProfitEnabled,
+      withdrawTimelineMainMs: this.withdrawTimelineMainMs,
+      withdrawTimelineAltMs: this.withdrawTimelineAltMs,
       baseTimeframe: this.autoTimeframe,
       retryStep: this.retryStep,
       nextTimeframe: this.nextTimeframe,
@@ -1096,6 +1756,17 @@ export class TradingService extends Service {
       portfolio,
       openTrades: [...this.forecastTrades.values()],
       lastResult: this.lastResult,
+      track1: {
+        enabled:
+          (process.env.TRACK1_QUALIFY_ENABLED ?? "false").toLowerCase() ===
+          "true",
+        tradeSizeUsd: this.qualifyTradeSizeUsd,
+        intervalMs: num("TRACK1_QUALIFY_INTERVAL_MS", 43_200_000),
+        // The heartbeat only runs while the main loop is active; surface its next
+        // fire only then so a stale persisted time isn't shown after a stop.
+        nextRunAt: this.loopActive ? this.qualifyNextAt : undefined,
+        inFlight: this.qualifyInFlight,
+      },
     };
   }
 
@@ -1150,7 +1821,8 @@ export class TradingService extends Service {
     );
     const totalValueUsd = positions.reduce((s, p) => s + p.currentValueUsd, 0);
     const totalPnlUsd = totalValueUsd - totalCostUsd;
-    const totalPnlPct = totalCostUsd > 0 ? (totalPnlUsd / totalCostUsd) * 100 : 0;
+    const totalPnlPct =
+      totalCostUsd > 0 ? (totalPnlUsd / totalCostUsd) * 100 : 0;
     return {
       positions,
       totalCostUsd,
@@ -1324,12 +1996,23 @@ export class TradingService extends Service {
     }
 
     // --- State ---
+    const withdrawNote =
+      this.withdrawTimelineMainMs || this.withdrawTimelineAltMs
+        ? ` · custom withdraw timeline ${[
+            this.withdrawTimelineMainMs &&
+              `main ${fmtDur(this.withdrawTimelineMainMs)}`,
+            this.withdrawTimelineAltMs &&
+              `alt ${fmtDur(this.withdrawTimelineAltMs)}`,
+          ]
+            .filter(Boolean)
+            .join(" / ")}`
+        : "";
     checks.push({
       name: "Autonomous loop",
       status: "info",
       detail: this.running
-        ? `running · ${this.autoTimeframe} every ${Math.round(this.intervalMs / 3_600_000)}h${this.nextTimeframe ? ` · next ${this.nextTimeframe}` : ""}`
-        : "stopped",
+        ? `running · ${this.autoTimeframe} every ${Math.round(this.intervalMs / 3_600_000)}h${this.nextTimeframe ? ` · next ${this.nextTimeframe}` : ""}${withdrawNote}`
+        : `stopped${withdrawNote}`,
     });
     checks.push({
       name: "Open positions",

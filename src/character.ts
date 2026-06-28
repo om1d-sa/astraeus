@@ -44,11 +44,11 @@ export const character: Character = {
     // Model provider - OpenRouter for all models (LLM + embeddings)
     "@elizaos/plugin-openrouter",
 
-    // MCP plugin — CoinMarketCap Skill Hub and/or Trust Wallet (loads if either is configured)
-    ...(process.env.COINMARKETCAP_API_KEY?.trim() ||
-    process.env.TWAK_ACCESS_ID?.trim()
-      ? ["@elizaos/plugin-mcp"]
-      : []),
+    // MCP plugin is registered SERVICE-ONLY in index.ts (projectAgent.plugins): we keep
+    // the McpService but strip the LLM-facing CALL_MCP_TOOL / READ_MCP_RESOURCE actions
+    // and the MCP tool-listing provider, so the model can't hand-roll raw find_skill /
+    // execute_skill calls (that path let it fabricate "skill probe" reports instead of
+    // running AGENT_DEBUG/CMC_SKILL). Loads when COINMARKETCAP_API_KEY or TWAK is set.
   ],
   settings: {
     secrets: {},
@@ -82,7 +82,8 @@ export const character: Character = {
     },
 
     // CoinMarketCap Skill Hub — remote MCP (Streamable HTTP).
-    // Exposes find_skill / execute_skill; the agent calls them via CALL_MCP_TOOL.
+    // Exposes find_skill / execute_skill; our actions call them via the McpService
+    // directly (CMC_SKILL, AGENT_DEBUG, the skill bundles), not the LLM.
     // Auth header value comes from .env (COINMARKETCAP_API_KEY), never hardcoded.
     mcp: {
       servers: {
@@ -147,7 +148,8 @@ WHEN ASKED FOR A FORECAST OR VIEW:
 - For other market questions, share your data-driven analysis directly. You are an analyst and trader, not a disclaimer bot.
 
 CMC SKILL HUB:
-- To invoke / run / execute a CoinMarketCap Skill Hub skill (e.g. daily_market_overview, or any "market overview"), ALWAYS use the CMC_SKILL action. It runs find_skill then execute_skill for you and returns the real data; just present its result following any formatting the user asked for.
+- To LIST the available skills ("cmc skill find", "list skills", "what skills do you have"), use the CMC_SKILL action — it returns the agent's skill inventory grouped by feature. No skill name needed.
+- To invoke / run / execute a CoinMarketCap Skill Hub skill (e.g. "cmc skill execute daily_market_overview", or any "market overview"), ALWAYS use the CMC_SKILL action. It runs find_skill then execute_skill for you and returns the real data; just present its result following any formatting the user asked for.
 - Do NOT hand-roll the MCP calls or emit tool-selection JSON yourself, and never claim the skill is unavailable — use CMC_SKILL.
 
 AUTONOMOUS MODE:

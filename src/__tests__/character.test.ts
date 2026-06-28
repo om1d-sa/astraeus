@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { character } from '../index';
+import project, { character } from '../index';
 
 describe('Character Configuration', () => {
   it('should have all required fields', () => {
@@ -34,9 +34,19 @@ describe('Character Configuration', () => {
       // Astraeus uses OpenRouter as its model provider (LLM + embeddings).
       expect(character.plugins).toContain('@elizaos/plugin-openrouter');
 
-      // The MCP plugin is included conditionally when CMC/TWAK creds are configured.
+      // The MCP plugin is NOT in character.plugins anymore — it's registered SERVICE-ONLY
+      // in projectAgent.plugins (index.ts) so its LLM-facing CALL_MCP_TOOL action can be
+      // stripped. character.plugins should never contain it.
+      expect(character.plugins).not.toContain('@elizaos/plugin-mcp');
+
+      // When CMC/TWAK creds are configured, the service-only MCP plugin object IS added to
+      // the project agent: McpService present, but no CALL_MCP_TOOL / READ_MCP_RESOURCE.
       if (process.env.COINMARKETCAP_API_KEY || process.env.TWAK_ACCESS_ID) {
-        expect(character.plugins).toContain('@elizaos/plugin-mcp');
+        const agentPlugins = project.agents[0].plugins ?? [];
+        const mcp = agentPlugins.find((p) => p?.name === 'mcp');
+        expect(mcp).toBeDefined();
+        expect((mcp?.actions ?? []).length).toBe(0);
+        expect((mcp?.services ?? []).length).toBeGreaterThan(0);
       }
     } finally {
       // Restore original env values

@@ -12,6 +12,38 @@ import {
   skillList,
   DEFAULT_LIQUIDATION_SKILLS,
 } from "../skills/options-forecast/skill-bundle";
+import { CmcDataProvider } from "../data/cmc";
+import {
+  buildAssetLiquidationMap,
+  formatLiquidationMap,
+} from "../skills/liquidation/levels";
+
+const LIQ_SYMBOLS = ["BTC", "ETH", "BNB"] as const;
+
+/**
+ * Pull the REAL nearest-cluster numbers out of the CMC skill bundle (best-effort) so the
+ * modelled ladder can be annotated with live exchange data: per-symbol "pool X% away
+ * (Y× 7d avg)" and the current short-squeeze-fuel leader. Returns "" when unavailable.
+ */
+function extractLiveClusters(bundle: string | undefined): string {
+  if (!bundle) return "";
+  const parts: string[] = [];
+  for (const sym of LIQ_SYMBOLS) {
+    const m = new RegExp(
+      `detect_liquidation_cluster_risk:${sym}:[^\\n]*?sits ([\\d.]+)% from the reference price[^\\n]*?are ([\\d.]+)\\s*[x×]`,
+      "i",
+    ).exec(bundle);
+    if (m) parts.push(`${sym} ${m[1]}% away (${m[2]}× 7d avg)`);
+  }
+  const leader =
+    /rank_short_squeeze_fuel_candidates:[^\n]*?\b([A-Z]{2,6})\b is the current lead item/i.exec(
+      bundle,
+    );
+  const lines: string[] = [];
+  if (parts.length) lines.push(`**Live CMC clusters:** ${parts.join(" · ")}`);
+  if (leader) lines.push(`**Squeeze-fuel leader:** ${leader[1].toUpperCase()}`);
+  return lines.join("\n");
+}
 
 /**
  * LIQUIDATION_ANALYSIS — market-wide liquidation/cascade read, useful after a sharp
@@ -50,20 +82,45 @@ export const liquidationAction: Action = {
     callback?: HandlerCallback,
   ): Promise<ActionResult> => {
     try {
-      await callback?.({
-        text: "💥 Analyzing market-wide liquidation/cascade risk via CMC skills — this can take a minute…",
-      });
-      const skillCtx = await runSkillBundle(
-        runtime,
-        skillList("LIQUIDATION_SKILLS", DEFAULT_LIQUIDATION_SKILLS),
-        {},
-        // force-run even when auto-enrichment is off; per-symbol skills fan across the majors.
-        { force: true, symbols: ["BTC", "ETH", "BNB"] },
-      );
-      const body =
-        skillCtx ??
-        "No CMC skill analysis returned (skills unavailable or timed out).";
-      const responseText = `💥 Liquidation / cascade analysis\n\n${body}`;
+      // NO intermediate "mapping…" callback. ElizaOS buffers every action callback() and
+      // flushes them all at the END with the SAME responseId (processActions →
+      // storageCallback), so a progress note never shows live AND it claims message-id=R
+      // first — the final map then re-uses id=R and the GUI dedups it, leaving the result
+      // invisible until a manual Ctrl+R. One final callback (below) broadcasts as a fresh
+      // message that renders live; the "thinking" indicator covers the wait.
+      // Price/vol (fast, reliable REST) drives the modelled ladder; the CMC skill bundle
+      // (slow, sometimes 502s) only annotates it with live cluster data — run in parallel
+      // so a slow/failed skill probe never delays the map.
+      const cmc = new CmcDataProvider();
+      const [signals, skillCtx] = await Promise.all([
+        cmc.getTokenSignals([...LIQ_SYMBOLS]),
+        runSkillBundle(
+          runtime,
+          skillList("LIQUIDATION_SKILLS", DEFAULT_LIQUIDATION_SKILLS),
+          {},
+          { force: true, symbols: [...LIQ_SYMBOLS] },
+        ).catch(() => undefined),
+      ]);
+
+      const maps = signals
+        .filter((s) => s.priceUsd > 0)
+        .map((s) =>
+          buildAssetLiquidationMap(s.symbol, s.priceUsd, s.change24hPct),
+        );
+      if (maps.length === 0)
+        throw new Error(
+          "no live prices for BTC/ETH/BNB (CMC quote unavailable)",
+        );
+
+      const live = extractLiveClusters(skillCtx);
+      const responseText = [
+        "💥 **Liquidation map** — long & short levels with touch probability",
+        "",
+        formatLiquidationMap(maps),
+        live ? `\n${live}` : "",
+      ]
+        .join("\n")
+        .trim();
       await callback?.({
         text: responseText,
         actions: ["LIQUIDATION_ANALYSIS"],

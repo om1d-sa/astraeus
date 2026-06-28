@@ -3,8 +3,8 @@
   "description": "Astraeus — an autonomous AI trading agent for BNB Smart Chain, powered by CoinMarketCap data and Trust Wallet self-custody execution.",
   "version": "0.1.0",
   "type": "module",
-  "main": "dist/src/index.js",
-  "module": "dist/src/index.js",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "keywords": [
     "ai-agent",
@@ -26,7 +26,7 @@
     ".": {
       "import": {
         "types": "./dist/index.d.ts",
-        "default": "./dist/src/index.js"
+        "default": "./dist/index.js"
       }
     }
   },
@@ -63,6 +63,7 @@
     "vite": "^7.2.6"
   },
   "scripts": {
+    "postinstall": "node scripts/patch-mcp-timeout.mjs && node scripts/patch-survive-channel-deletion.mjs && node scripts/patch-message-upsert.mjs",
     "start": "elizaos start",
     "dev": "elizaos dev",
     "build": "bun run build.ts",

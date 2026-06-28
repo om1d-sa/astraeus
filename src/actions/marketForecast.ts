@@ -31,8 +31,23 @@ const TF_LABEL: Record<ForecastTimeframe, string> = {
   weekly: "1W",
 };
 
-/** Market-cap-ish weights so the overall read leans on the larger assets. */
-const WEIGHTS: Record<Asset, number> = { BTC: 0.5, ETH: 0.3, BNB: 0.2 };
+/** Read a numeric env var, falling back when unset/blank/non-numeric. */
+const numEnv = (key: string, fallback: number): number => {
+  const v = process.env[key];
+  const n = v !== undefined && v !== "" ? Number(v) : NaN;
+  return Number.isFinite(n) ? n : fallback;
+};
+
+/**
+ * Market-cap-ish weights so the overall read leans on the larger assets.
+ * Controllable via MARKET_WEIGHT_BTC/ETH/BNB (any scale — they're normalized by the
+ * weight that actually resolves at blend time). Defaults 50/30/20.
+ */
+const assetWeights = (): Record<Asset, number> => ({
+  BTC: numEnv("MARKET_WEIGHT_BTC", 50),
+  ETH: numEnv("MARKET_WEIGHT_ETH", 30),
+  BNB: numEnv("MARKET_WEIGHT_BNB", 20),
+});
 const ASSETS: Asset[] = ["BTC", "ETH", "BNB"];
 
 const dirArrow = (d: string): string =>
@@ -106,7 +121,7 @@ export const marketForecastAction: Action = {
           return null;
         }
       })();
-      // Source 7 (CMC options-positioning) feeds the 30% options leg — slow (MCP),
+      // Source 7 (CMC options-positioning) feeds the options leg — slow (MCP),
       // so OFF by default; flip MARKET_OPTIONS_ENRICH=true to include it.
       const useSource7 =
         (process.env.MARKET_OPTIONS_ENRICH ?? "false").toLowerCase() === "true";
@@ -147,7 +162,9 @@ export const marketForecastAction: Action = {
       if (forecasts.length === 0) {
         const reasons = settled
           .map((r) =>
-            r.status === "rejected" ? String(r.reason?.message ?? r.reason) : "",
+            r.status === "rejected"
+              ? String(r.reason?.message ?? r.reason)
+              : "",
           )
           .filter(Boolean)
           .join("; ");
@@ -162,9 +179,10 @@ export const marketForecastAction: Action = {
         forecasts.map((f) => [f.asset, f]),
       );
 
-      // Options leg (30%): weighted directional score in -1..1. Renormalize by the
-      // weight that actually resolved so a missing asset doesn't deflate the blend
-      // (identical to the old math when all three succeed — weights sum to 1).
+      // Options leg: weighted directional score in -1..1. Renormalize by the weight
+      // that actually resolved so a missing asset doesn't deflate the blend (any
+      // weight scale works — the result depends only on the BTC/ETH/BNB ratio).
+      const WEIGHTS = assetWeights();
       const totalWeight = forecasts.reduce((s, f) => s + WEIGHTS[f.asset], 0);
       let optScore = 0;
       let confidence = 0;
@@ -210,13 +228,9 @@ export const marketForecastAction: Action = {
         ? cmcSignals.reduce((a, b) => a + b, 0) / cmcSignals.length
         : undefined;
 
-      // Base blend: CMC market 70% + options 30% (fall back to options-only if CMC down).
-      const baseBlended =
-        cmcScore !== undefined ? 0.7 * cmcScore + 0.3 * optScore : optScore;
-
       // CMC skill bundle (off unless CMC_SKILLS_ENABLED) → the LLM distills it into a
-      // directional sentiment that ACTUALLY moves the score, weighted MARKET_SKILL_WEIGHT
-      // (default 20%, capped 50%). If skills are off or synthesis fails, the base read stands.
+      // directional sentiment that ACTUALLY moves the score (third leg of the blend below).
+      // If skills are off or synthesis fails, that leg simply drops out.
       const skillCtx = await runSkillBundle(
         runtime,
         skillList("MARKET_SKILLS", DEFAULT_MARKET_SKILLS),
@@ -232,12 +246,27 @@ export const marketForecastAction: Action = {
             "the overall crypto market",
           )
         : undefined;
-      const wEnv = Number(process.env.MARKET_SKILL_WEIGHT);
-      const skillW = synth
-        ? Math.max(0, Math.min(0.5, Number.isFinite(wEnv) ? wEnv : 0.2))
-        : 0;
+      // Final score: a SINGLE weighted blend over three legs, all on the same whole-number
+      // scale (defaults CMC 56 / options 24 / skill 20). Any leg that's unavailable — CMC
+      // REST down, or skills off / synthesis failed — drops out and the remaining legs are
+      // renormalized, so only the RATIO between the present legs matters. With all three:
+      // 0.56·cmc + 0.24·opt + 0.20·skill; with skills off it collapses to a 70/30 cmc/opt
+      // split (56:24); options-only if CMC is also down.
+      const legs: Array<{ w: number; score: number }> = [
+        { w: numEnv("MARKET_OPTIONS_WEIGHT", 24), score: optScore },
+      ];
+      if (cmcScore !== undefined)
+        legs.push({ w: numEnv("MARKET_CMC_WEIGHT", 56), score: cmcScore });
+      if (synth)
+        legs.push({
+          w: numEnv("MARKET_SKILL_WEIGHT", 20),
+          score: synth.sentiment,
+        });
+      const legTotal = legs.reduce((s, l) => s + l.w, 0);
       const blended =
-        (1 - skillW) * baseBlended + skillW * (synth?.sentiment ?? 0);
+        legTotal > 0
+          ? legs.reduce((s, l) => s + l.w * l.score, 0) / legTotal
+          : optScore;
       const overall =
         blended > 0.12 ? "BULLISH" : blended < -0.12 ? "BEARISH" : "NEUTRAL";
       const overallArrow =

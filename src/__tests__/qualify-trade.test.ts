@@ -66,44 +66,109 @@ const fundedPortfolio = async () => ({
   holdings: [],
 });
 
+/**
+ * Stateful executor mock: tracks USDT cash + ETH amount and updates them on each swap,
+ * with a small fill fee so the amount received is slightly LESS than requested (like a real
+ * DEX). The balance-aware Track-1 sell-back re-reads the wallet after the buy and sells only
+ * the ETH it actually received, so a static portfolio can't exercise it. TWAK reports
+ * valueUsd:0 for ETH, so the mock does too — the code prices ETH itself (amount × price).
+ */
+function statefulExec(
+  init: { cashUsd: number; ethAmount: number },
+  price = 3000,
+  fee = 0.99,
+): { exec: unknown; swaps: MockSwap[] } {
+  const state = { ...init };
+  const swaps: MockSwap[] = [];
+  const exec = {
+    mark: () => {},
+    getPortfolio: async () => ({
+      totalValueUsd: state.cashUsd + state.ethAmount * price,
+      cashUsd: state.cashUsd,
+      holdings:
+        state.ethAmount > 1e-12
+          ? [{ symbol: "ETH", amount: state.ethAmount, valueUsd: 0 }]
+          : [],
+    }),
+    swap: async (r: MockSwap) => {
+      swaps.push(r);
+      if (r.fromSymbol === "USDT" && r.toSymbol === "ETH") {
+        state.cashUsd -= r.amountUsd;
+        state.ethAmount += (r.amountUsd / price) * fee;
+      } else if (r.fromSymbol === "ETH" && r.toSymbol === "USDT") {
+        state.ethAmount = Math.max(0, state.ethAmount - r.amountUsd / price);
+        state.cashUsd += r.amountUsd * fee;
+      }
+      return { ok: true, txHash: "0x" };
+    },
+  };
+  return { exec, swaps };
+}
+
 describe("qualifying round-trip (doQualifyingTrade)", () => {
-  it("buys ETH then immediately sells it back, returning true on success", async () => {
-    const swaps: MockSwap[] = [];
-    const exec = {
-      mark: () => {},
-      getPortfolio: fundedPortfolio,
-      swap: async (r: MockSwap) => {
-        swaps.push(r);
-        return { ok: true, txHash: "0xabc" };
-      },
-    };
+  it("buys ETH then sells back only what it received — never over-requests (haircut)", async () => {
+    const { exec, swaps } = statefulExec({ cashUsd: 100, ethAmount: 0 });
     const { svc } = makeService(exec, ethPrice);
     expect(await svc.doQualifyingTrade()).toBe(true);
-    expect(swaps.length).toBe(2);
-    expect([swaps[0].fromSymbol, swaps[0].toSymbol]).toEqual(["USDT", "ETH"]); // buy
-    expect([swaps[1].fromSymbol, swaps[1].toSymbol]).toEqual(["ETH", "USDT"]); // sell back
+    const buy = swaps.find((s) => s.fromSymbol === "USDT" && s.toSymbol === "ETH");
+    const sell = swaps.find((s) => s.fromSymbol === "ETH" && s.toSymbol === "USDT");
+    expect(buy).toBeDefined(); // the qualifying BUY (this leg counts)
+    expect(sell).toBeDefined(); // the sell-back that flattens it
+    // The sell-back is sized off the ETH actually received (buy size × fill) minus the
+    // haircut, so it requests strictly LESS than the buy — never the full nominal (which
+    // is what stranded the ETH before, since a live swap rejects an over-balance amount).
+    expect(sell!.amountUsd).toBeLessThan(buy!.amountUsd);
   });
 
-  it("falls back to selling held ETH when the main loop has tied up USDT cash", async () => {
+  it("when USDT cash is tied up in a TRACKED position, sells ETH first then rebuys", async () => {
+    // A main-loop position holds 0.003 ETH and the wallet holds exactly that (no stray to
+    // flatten); USDT cash is below the $1.5 size. The heartbeat must still land by selling
+    // ETH then rebuying it — restoring the starting allocation.
+    const { exec, swaps } = statefulExec({ cashUsd: 0.5, ethAmount: 0.003 });
+    const { svc, raw } = makeService(exec, ethPrice);
+    (raw.forecastTrades as Map<string, unknown>).set("loop1", {
+      ...openTrade("loop1"),
+      boughtAmount: 0.003, // tracked → not treated as stray
+    });
+    expect(await svc.doQualifyingTrade()).toBe(true);
+    const sellIdx = swaps.findIndex(
+      (s) => s.fromSymbol === "ETH" && s.toSymbol === "USDT",
+    );
+    const buyIdx = swaps.findIndex(
+      (s) => s.fromSymbol === "USDT" && s.toSymbol === "ETH",
+    );
+    expect(sellIdx).toBeGreaterThanOrEqual(0);
+    expect(buyIdx).toBeGreaterThan(sellIdx); // sold first, then rebought
+  });
+
+  it("does NOT report success when the sell-back fails — returns false so it retries", async () => {
+    // Buy succeeds but every ETH→USDT sell reverts (e.g. live insufficient-balance): the
+    // bought ETH is left in the wallet. The heartbeat must NOT claim a clean round-trip
+    // (that reschedules a full interval out and strands the ETH) — it returns false so
+    // runQualifyCycle retries on the short cadence and flattens the stray on the next pass.
+    let eth = 0;
     const swaps: MockSwap[] = [];
     const exec = {
       mark: () => {},
-      // Cash is below the $1.5 size (deployed into an open ETH position), but ETH is held.
       getPortfolio: async () => ({
-        totalValueUsd: 10,
-        cashUsd: 0.5,
-        holdings: [{ symbol: "ETH", amount: 0.003, valueUsd: 9 }],
+        totalValueUsd: 100,
+        cashUsd: 100,
+        holdings: eth > 1e-12 ? [{ symbol: "ETH", amount: eth, valueUsd: 0 }] : [],
       }),
       swap: async (r: MockSwap) => {
         swaps.push(r);
-        return { ok: true, txHash: "0xeth" };
+        if (r.fromSymbol === "USDT" && r.toSymbol === "ETH") {
+          eth += (r.amountUsd / 3000) * 0.99;
+          return { ok: true, txHash: "0xbuy" };
+        }
+        return { ok: false, error: "insufficient balance" }; // sell-back always fails
       },
     };
     const { svc } = makeService(exec, ethPrice);
-    expect(await svc.doQualifyingTrade()).toBe(true);
-    expect(swaps.length).toBe(2);
-    expect([swaps[0].fromSymbol, swaps[0].toSymbol]).toEqual(["ETH", "USDT"]); // sell first
-    expect([swaps[1].fromSymbol, swaps[1].toSymbol]).toEqual(["USDT", "ETH"]); // rebuy back
+    expect(await svc.doQualifyingTrade()).toBe(false);
+    expect(
+      swaps.some((s) => s.fromSymbol === "USDT" && s.toSymbol === "ETH"),
+    ).toBe(true); // the buy did happen
   });
 
   it("returns false (→ heartbeat will retry in 5 min) when the buy fails (e.g. 403)", async () => {

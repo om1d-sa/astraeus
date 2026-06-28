@@ -70,6 +70,6 @@ export async function fetchCmcForecastContext(
   if (lines.length === 0) return undefined;
   return {
     priceUsd,
-    context: `COINMARKETCAP AGENT HUB CONTEXT (supplementary, ~40% weight — the options/derivatives data remains the primary ~60% basis):\n${lines.join("\n")}`,
+    context: `COINMARKETCAP AGENT HUB CONTEXT (supplementary — the options/derivatives data remains the primary basis):\n${lines.join("\n")}`,
   };
 }

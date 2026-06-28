@@ -107,7 +107,8 @@ Save both lines: `ADDRESS` is what you fund, `KEY` becomes `CLIENT_PRIVATE_KEY`.
 | tBNB (gas — ~0.01 per run, 0.3 covers dozens) | <https://www.bnbchain.org/en/testnet-faucet> |
 | U token (payment — 1 U per job) | <https://united-coin-u.github.io/u-faucet/> |
 
-**4. Set the buyer env vars** (same venv, PowerShell syntax):
+**4. Give the buyer its three values.** Either export them in the shell (same venv,
+PowerShell syntax)…
 
 ```powershell
 $env:CLIENT_PRIVATE_KEY = "0x...buyer key from step 2..."
@@ -115,26 +116,48 @@ $env:CLIENT_PASSWORD     = "any-password-to-encrypt-the-local-keystore"
 $env:PROVIDER_ADDRESS    = "0x...sidecar address from step 1..."
 ```
 
-**5. Run the buyer:**
+…**or** (recommended) drop them once into a gitignored `sidecar/.env.buyer` file so
+you never have to re-export them:
+
+```bash
+# sidecar/.env.buyer
+CLIENT_PRIVATE_KEY=0x...buyer key from step 2...
+CLIENT_PASSWORD=any-password-to-encrypt-the-local-keystore
+PROVIDER_ADDRESS=0x...sidecar address from step 1...
+```
+
+**5. Buy a forecast:**
 
 ```powershell
 python client_demo.py
 ```
 
-It runs `create_job → register_job → set_budget → fund → [sidecar delivers] → settle`
-and ends at `Final status: COMPLETED`. View every tx at
-`https://testnet.bscscan.com/address/<PROVIDER_ADDRESS>`.
+It runs `create_job → register_job → set_budget → fund → [sidecar delivers]` and
+returns as soon as the sidecar delivers (status **SUBMITTED**) — that is the full
+agentic-commerce round-trip, with real `create_job` / `fund` / `submit` tx hashes.
+
+**6. Finalize later (optional).** ERC-8183 settles **optimistically**: the job
+auto-approves only after the policy's dispute window elapses (~1 day on bsc-testnet).
+Once it has, flip it to **COMPLETED** with:
+
+```powershell
+python client_demo.py --settle <jobId>
+```
+
+View every tx at `https://testnet.bscscan.com/address/<PROVIDER_ADDRESS>`.
 
 > The buyer wallet is **reusable** — each run creates a fresh job. Keep the same key
 > and `CLIENT_PASSWORD` across runs (a new password won't open the existing keystore),
 > and make sure it still holds tBNB + U tokens. Only generate a new key if you want a
 > clean wallet.
 
-> Sidecar and buyer must be on the **same network** — `client_demo.py` hardcodes
-> `network="bsc-testnet"`, so keep `NETWORK=bsc-testnet` in the sidecar `.env`.
+> Sidecar and buyer must be on the **same network**. `client_demo.py` reads `NETWORK`
+> (default `bsc-testnet`) and `RPC_URL` from the environment / `sidecar/.env`, so keep
+> `NETWORK=bsc-testnet` in the sidecar `.env`.
 
 ## Security
 
-- `sidecar/.env` is gitignored — never commit it.
+- `sidecar/.env` and `sidecar/.env.buyer` are gitignored — never commit them (the
+  latter holds the buyer wallet's private key).
 - The sidecar wallet is for ERC-8183 escrow only; **do not** fund it with trading capital.
 - Keep `WALLET_PASSWORD` in a password manager (the keystore at `~/.bnbagent/` needs it).

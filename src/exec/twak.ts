@@ -52,7 +52,7 @@ export function isTransientSwapError(msg: string): boolean {
     )
   )
     return false;
-  return /network_error|unable to fetch|could not fetch|try again|timeout|timed out|econnreset|etimedout|temporar|rate.?limit/.test(
+  return /network_error|unable to fetch|could not fetch|fail(?:ed)? to fetch|fetch failed|try again|timeout|timed out|econnreset|etimedout|enotfound|eai_again|socket hang up|temporar|rate.?limit/.test(
     m,
   );
 }
@@ -68,6 +68,43 @@ export interface TwakExecutorOptions {
   timeoutMs?: number;
   /** Fallback slippage % when a request doesn't set one (default 1). */
   defaultSlippagePct?: number;
+  /**
+   * Prefer a token's on-chain CONTRACT ADDRESS over its ticker when the request supplies
+   * one (see {@link SwapRequest.toAddress}). BSC tickers like M/B/U/NFT/REAL collide across
+   * chains, so TWAK can route the wrong token (or fail) when given just the symbol — the
+   * address is unambiguous. Default ON; set TRACK1_ALTCOIN_USE_CONTRACT=false to force symbols.
+   */
+  useContract?: boolean;
+}
+
+/** The token identifier to hand TWAK for one swap leg: the contract address when we have
+ *  one and `useContract` is on (unambiguous on-chain), else the ticker. Pure + testable. */
+export function tokenArg(
+  symbol: string,
+  address: string | undefined,
+  useContract: boolean,
+): string {
+  return useContract && address && address.trim() ? address.trim() : symbol;
+}
+
+/** Build the `twak swap …` argv for a request. Pure (no I/O) so the symbol-vs-contract
+ *  routing — the exact thing that breaks live altcoin swaps — is unit-testable. */
+export function buildSwapArgs(
+  req: SwapRequest,
+  opts: { chain: string; slippagePct: number; useContract: boolean },
+): string[] {
+  return [
+    "swap",
+    tokenArg(req.fromSymbol, req.fromAddress, opts.useContract),
+    tokenArg(req.toSymbol, req.toAddress, opts.useContract),
+    "--usd",
+    String(req.amountUsd),
+    "--chain",
+    opts.chain,
+    "--slippage",
+    String(opts.slippagePct),
+    "--json",
+  ];
 }
 
 export class TwakExecutor implements Executor {
@@ -76,6 +113,7 @@ export class TwakExecutor implements Executor {
   private readonly bin: string;
   private readonly timeoutMs: number;
   private readonly defaultSlippagePct: number;
+  private readonly useContract: boolean;
 
   constructor(opts: TwakExecutorOptions = {}) {
     this.chain = opts.chain ?? "bsc";
@@ -83,6 +121,13 @@ export class TwakExecutor implements Executor {
     this.bin = opts.bin ?? process.env.TWAK_BIN ?? "twak";
     this.timeoutMs = opts.timeoutMs ?? 120_000;
     this.defaultSlippagePct = opts.defaultSlippagePct ?? 1;
+    // Default ON: prefer the contract address for chain-ambiguous altcoin tickers.
+    // Trim before comparing so a padded "  false  " disables routing here exactly as it
+    // does in altcoinUseContract() — the two reads must not diverge on whitespace.
+    this.useContract =
+      opts.useContract ??
+      (process.env.TRACK1_ALTCOIN_USE_CONTRACT ?? "true").trim().toLowerCase() !==
+        "false";
   }
 
   /** No-op: TWAK resolves real prices on-chain. Kept for PaperExecutor parity. */
@@ -90,8 +135,8 @@ export class TwakExecutor implements Executor {
     /* intentionally empty */
   }
 
-  private run(args: string[]) {
-    return runTwak(args, { bin: this.bin, timeoutMs: this.timeoutMs });
+  private run(args: string[], timeoutMs: number = this.timeoutMs) {
+    return runTwak(args, { bin: this.bin, timeoutMs });
   }
 
   async getPortfolio(): Promise<Portfolio> {
@@ -156,26 +201,36 @@ export class TwakExecutor implements Executor {
       req.maxSlippageBps > 0
         ? req.maxSlippageBps / 100
         : this.defaultSlippagePct;
-    const args = [
-      "swap",
-      req.fromSymbol,
-      req.toSymbol,
-      "--usd",
-      String(req.amountUsd),
-      "--chain",
-      this.chain,
-      "--slippage",
-      String(slippagePct),
-      "--json",
-    ];
+    // Hand TWAK the contract address for altcoins (tickers collide across chains), the
+    // ticker for the stable cash leg. buildSwapArgs decides per leg from req.*Address.
+    const args = buildSwapArgs(req, {
+      chain: this.chain,
+      slippagePct,
+      useContract: this.useContract,
+    });
     // TWAK's price/quote upstream is intermittently flaky (NETWORK_ERROR / "unable to
     // fetch price") BEFORE any tx is sent — so retry transient blips. Real reverts and
     // auth/funds errors are NOT retried (isTransientSwapError filters them out).
+    // A live swap is TWO sequential on-chain txs (ERC-20 approval, then the swap) routed
+    // through an aggregator — far slower than a read (~200s observed on BSC), so it gets a
+    // dedicated, longer budget than the executor's default read timeout.
+    const swapTimeoutMs = num("TWAK_SWAP_TIMEOUT_MS", 240_000);
     const maxAttempts = Math.max(1, num("TWAK_SWAP_RETRIES", 10));
     const retryDelayMs = num("TWAK_SWAP_RETRY_MS", 2000);
     let lastErr = "swap failed";
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const { json, raw } = await this.run(args);
+      let json: unknown;
+      let raw: string;
+      try {
+        ({ json, raw } = await this.run(args, swapTimeoutMs));
+      } catch (e) {
+        // run() throws ONLY when twak produced no stdout — i.e. the process was killed
+        // (timeout) or crashed, possibly AFTER broadcasting the swap tx. We must NOT retry
+        // here: a retry could double-execute the buy. Surface it as a graceful failure
+        // (not an exception) so the caller handles it via its pre-trade stray-ETH sweep,
+        // which reconciles any phantom fill on the next cycle.
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
       const obj = asRecord(json);
       if (obj.error || obj.errorCode) {
         lastErr = String(obj.error ?? obj.errorCode);

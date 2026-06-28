@@ -41,9 +41,21 @@ export const diagnosticsAction: Action = {
     _state?: State,
   ): Promise<boolean> => {
     const t = (message.content?.text ?? "").toLowerCase();
-    return /\b(trade\s+diagnostics|debug\s+trade|why\s+no\s+trade|diagnostics?|health\s*check|self[\s-]*test|system\s*check|readiness|is everything (ok|working|wired))\b/.test(
-      t,
-    );
+    // Explicit trade-health / generic health-check phrasings always route here.
+    if (
+      /\b(trade\s+diagnostics|debug\s+trade|why\s+no\s+trade|health\s*check|self[\s-]*test|system\s*check|readiness|is everything (ok|working|wired))\b/.test(
+        t,
+      )
+    )
+      return true;
+    // A bare "diagnostics" IS the trade health-check — UNLESS a skill-bundle feature is
+    // named ("crypto research diagnostics", "liquidation analysis diagnostics", …), which
+    // AGENT_DEBUG live-probes instead. Plain "diagnostics" / "run diagnostics" stay here.
+    if (/\bdiagnostics?\b/.test(t))
+      return !/\b(skill|bundle|market|research|trend\w*|portfolio|liquidation|cascade|squeeze)\b/.test(
+        t,
+      );
+    return false;
   },
 
   handler: async (
@@ -65,9 +77,12 @@ export const diagnosticsAction: Action = {
     }
 
     try {
-      await callback?.({
-        text: "🩺 Running trade diagnostics (live market-data + forecast probe, ~10–20s)…",
-      });
+      // NO intermediate "running…" callback. ElizaOS buffers every action callback() and
+      // flushes them all at the END with the SAME responseId (processActions →
+      // storageCallback), so a progress note never shows live AND it claims message-id=R
+      // first — the final report then re-uses id=R and the GUI dedups it, leaving the result
+      // invisible until a manual Ctrl+R. One final callback (below) broadcasts as a fresh
+      // message that renders live; the "thinking" indicator covers the ~10-20s probe.
       const checks = await svc.runDiagnostics();
 
       const passed = checks.filter((c) => c.status === "pass").length;

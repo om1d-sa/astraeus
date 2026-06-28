@@ -49,6 +49,60 @@ function raceTimeout<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
   );
 }
 
+/**
+ * Run `fn` over `items` with at most `limit` in flight at once. The CMC hub returns
+ * 502 Bad Gateway when a whole bundle (~100 calls) is fired at it simultaneously, so
+ * every execute_skill fan-out goes through this pool instead of a raw Promise.all.
+ * Results keep the input order.
+ */
+async function mapPool<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
+  };
+  const n = Math.max(1, Math.min(limit, items.length || 1));
+  await Promise.all(Array.from({ length: n }, worker));
+  return results;
+}
+
+/** Max concurrent execute_skill calls — kept low because the hub 502s on bursts. */
+const skillConcurrency = (): number => Math.max(1, num("CMC_SKILLS_CONCURRENCY", 6));
+
+/**
+ * Call an MCP tool with a few retries on transient transport failures (notably the
+ * hub's intermittent 502 Bad Gateway). A failed skill call costs no CMC credit, so a
+ * retry is cheap; it backs off briefly between attempts.
+ */
+async function callToolWithRetry(
+  mcp: McpLike,
+  tool: string,
+  args: Record<string, unknown>,
+  attempts = 3,
+): Promise<{ isError?: boolean; content?: Array<{ text?: string }> }> {
+  let lastErr: unknown;
+  for (let a = 0; a < attempts; a++) {
+    try {
+      return await mcp.callTool(CMC_SERVER, tool, args);
+    } catch (e) {
+      lastErr = e;
+      if (a < attempts - 1)
+        await new Promise((r) => {
+          const t = setTimeout(r, 500 * (a + 1));
+          (t as { unref?: () => void }).unref?.();
+        });
+    }
+  }
+  throw lastErr;
+}
+
 /** Whether the (slow) CMC skill bundles are enabled. OFF by default. */
 export function skillsEnabled(): boolean {
   return (process.env.CMC_SKILLS_ENABLED ?? "false").toLowerCase() === "true";
@@ -76,6 +130,56 @@ const hasContent = (v: unknown): boolean =>
       : v != null;
 
 /**
+ * First non-empty string value for ANY of `keys`, descending through nested objects,
+ * arrays, and JSON-string fields. CMC double-encodes the real result under
+ * `result.output` as a JSON string, so the meaningful fields (`summary`, `status`)
+ * live several layers down. Returns undefined when none is present.
+ */
+function findNestedString(raw: unknown, keys: string[]): string | undefined {
+  const tryParse = (s: string): unknown => {
+    try {
+      return JSON.parse(s);
+    } catch {
+      return undefined;
+    }
+  };
+  const walk = (v: unknown, depth: number): string | undefined => {
+    if (depth > 8 || v == null) return undefined;
+    if (typeof v === "string") {
+      const t = v.trim();
+      return t.startsWith("{") || t.startsWith("[")
+        ? walk(tryParse(t), depth + 1)
+        : undefined;
+    }
+    if (Array.isArray(v)) {
+      for (const x of v) {
+        const f = walk(x, depth + 1);
+        if (f) return f;
+      }
+      return undefined;
+    }
+    if (typeof v === "object") {
+      const obj = v as Record<string, unknown>;
+      for (const key of keys)
+        if (typeof obj[key] === "string" && (obj[key] as string).trim())
+          return (obj[key] as string).trim();
+      for (const val of Object.values(obj)) {
+        const f = walk(val, depth + 1);
+        if (f) return f;
+      }
+    }
+    return undefined;
+  };
+  return walk(typeof raw === "string" ? (tryParse(raw) ?? raw) : raw, 0);
+}
+
+/** The skill's own `data.status` ("ok" / "partial" / "blocked" / …), dug from the
+ *  (often double-encoded) payload. Undefined when the payload has no status field. */
+function nestedStatus(txt: string): string | undefined {
+  return findNestedString(txt, ["status"]);
+}
+
+/**
  * True if a skill's execute_skill payload is an error rather than a usable
  * result. CMC validation/skill failures come back as a *successful* MCP response
  * whose text is a JSON error envelope (top-level `error`, or a wrapped result
@@ -91,16 +195,28 @@ export function isErrorPayload(txt: string): boolean {
     if (hasContent(j.error)) return true;
     const r = j.result;
     if (r && typeof r === "object") {
-      if (r.success === false) return true;
-      if (typeof r.exitCode === "number" && r.exitCode !== 0) return true;
       if (hasContent(r.error)) return true;
+      // CMC flags a NOT-fully-clean run with success:false and/or a non-zero exitCode.
+      const flaggedFailed =
+        r.success === false ||
+        (typeof r.exitCode === "number" && r.exitCode !== 0);
+      if (flaggedFailed) {
+        // ...but that flag is only a HARD failure when the skill returned no usable
+        // evidence. CMC marks "partial"/"degraded" evidence packs (thin data, but a real
+        // summary) with success:false + exitCode 1 — those still carry signal, so keep
+        // them. Treat as an error only when the status is blocked/failed or there is no
+        // summary at all.
+        const status = nestedStatus(txt);
+        const usable =
+          !!extractSkillSummary(txt) &&
+          (status === undefined || /^(ok|partial|degrad)/i.test(status));
+        return !usable;
+      }
     }
     return false;
   } catch {
-    // Not JSON — fall back to known CMC error markers.
-    return /INVALID_ARGUMENT|INVALID_PARAMS|validation failed|"success"\s*:\s*false/i.test(
-      txt,
-    );
+    // Not JSON — fall back to known CMC schema/validation error markers.
+    return /INVALID_ARGUMENT|INVALID_PARAMS|validation failed/i.test(txt);
   }
 }
 
@@ -134,22 +250,39 @@ const snippet = (s: string, max = 140): string =>
  * readable instead of dumping the full JSON.
  */
 function errorReason(txt: string): string {
+  // 1) The skill's OWN status + summary (degraded evidence packs that still carry signal).
+  const status = nestedStatus(txt);
+  const summary = extractSkillSummary(txt);
+  if (summary)
+    return status ? `${status}: ${snippet(summary, 160)}` : snippet(summary, 160);
+  // 2) A TOP-LEVEL schema/validation error (preview / required-property mismatches).
   try {
     const j = JSON.parse(txt) as {
       error?: { code?: unknown; message?: unknown };
       result?: { error?: { code?: unknown; message?: unknown } };
     };
     const err = j.error ?? j.result?.error;
-    const code = String(err?.code ?? "error");
-    const msg = String(err?.message ?? "");
-    const required = msg.match(/required property '([^']+)'/)?.[1];
-    if (required) return `${code}: needs '${required}'`;
-    const prop = msg.match(/property '([^']+)'/)?.[1];
-    if (prop) return `${code}: '${prop}' not accepted`;
-    return code !== "error" ? code : snippet(msg || txt, 80);
+    if (err && typeof err === "object" && (err.code || err.message)) {
+      const code = String(err.code ?? "error");
+      const msg = String(err.message ?? "");
+      const required = msg.match(/required property '([^']+)'/)?.[1];
+      if (required) return `${code}: needs '${required}'`;
+      const prop = msg.match(/property '([^']+)'/)?.[1];
+      if (prop) return `${code}: '${prop}' not accepted`;
+      return msg ? `${code}: ${snippet(msg, 150)}` : code;
+    }
   } catch {
-    return snippet(txt, 80);
+    /* fall through to the nested-error lookup */
   }
+  // 3) A NESTED error object CMC double-encodes under result.output (e.g.
+  //    SECTOR_DISCOVERY_FAILED: "No stable sector candidates were derived…").
+  const code = findNestedString(txt, ["code"]);
+  const message = findNestedString(txt, ["message"]);
+  if (code || message)
+    return code && message
+      ? `${code}: ${snippet(message, 150)}`
+      : snippet((code ?? message) as string, 160);
+  return status ?? snippet(txt, 80);
 }
 
 /**
@@ -161,44 +294,9 @@ function errorReason(txt: string): string {
  * Returns undefined when none is present.
  */
 export function extractSkillSummary(raw: string): string | undefined {
-  const tryParse = (s: string): unknown => {
-    try {
-      return JSON.parse(s);
-    } catch {
-      return undefined;
-    }
-  };
-  // First non-empty string value for `key`, descending into objects, arrays, and
-  // JSON-string fields (CMC double-encodes `output` as a JSON string).
-  const findKey = (v: unknown, key: string, depth: number): string | undefined => {
-    if (depth > 8 || v == null) return undefined;
-    if (typeof v === "string") {
-      const t = v.trim();
-      return t.startsWith("{") || t.startsWith("[")
-        ? findKey(tryParse(t), key, depth + 1)
-        : undefined;
-    }
-    if (Array.isArray(v)) {
-      for (const x of v) {
-        const f = findKey(x, key, depth + 1);
-        if (f) return f;
-      }
-      return undefined;
-    }
-    if (typeof v === "object") {
-      const obj = v as Record<string, unknown>;
-      if (typeof obj[key] === "string" && (obj[key] as string).trim())
-        return (obj[key] as string).trim();
-      for (const val of Object.values(obj)) {
-        const f = findKey(val, key, depth + 1);
-        if (f) return f;
-      }
-    }
-    return undefined;
-  };
-  const tree = tryParse(raw) ?? raw;
+  // One key at a time to preserve priority: a `summary` anywhere beats a `conclusion`.
   for (const key of ["summary", "conclusion", "decision"]) {
-    const found = findKey(tree, key, 0);
+    const found = findNestedString(raw, [key]);
     if (found) return found;
   }
   return undefined;
@@ -243,6 +341,39 @@ Respond with ONLY this JSON, nothing else:
     return summary ? { sentiment, summary } : undefined;
   } catch (e) {
     logger.warn({ err: String(e) }, "skill synthesis failed — using base read");
+    return undefined;
+  }
+}
+
+/**
+ * Distill a {@link runSkillBundle} blob into a clean, trader-readable briefing via the
+ * LLM — a one-line verdict, a few concrete bullets, and a takeaway — instead of dumping
+ * the raw (verbose, hedge-heavy) skill text. Used by LIQUIDATION/PORTFOLIO whose whole
+ * reply IS the bundle. Best-effort: returns undefined on any failure (empty input, LLM
+ * error) so the caller falls back to the raw bundle.
+ */
+export async function synthesizeSkillReport(
+  runtime: IAgentRuntime,
+  bundleText: string,
+  context: string,
+): Promise<string | undefined> {
+  if (!bundleText.trim()) return undefined;
+  try {
+    const prompt = `You are a senior crypto derivatives analyst. Below are raw CoinMarketCap Skill Hub analyses for ${context}. Rewrite them into a clean briefing a trader can read in 15 seconds.
+
+Rules:
+- First line exactly: "**Verdict:** <overall risk/bias in plain words>".
+- Then 3–6 short bullets ("- ") with the CONCRETE signals only — levels, ratios, which assets. No hedging filler, no meta-commentary about "evidence screens" or "bounded claims".
+- Last line exactly: "**Takeaway:** <what to watch or do>".
+- GitHub markdown only. No preamble, no headings, no restating these rules, no "as an AI".
+- Use only facts present in the evidence; if a lane is data-limited, note it in ≤6 words.
+
+${bundleText}`;
+    const raw = await runtime.useModel(ModelType.TEXT_LARGE, { prompt });
+    const out = String(raw ?? "").trim();
+    return out.length ? out : undefined;
+  } catch (e) {
+    logger.warn({ err: String(e) }, "skill report synthesis failed — using raw bundle");
     return undefined;
   }
 }
@@ -327,7 +458,7 @@ export async function runSkillBundle(
   const runOne = async (job: SkillJob): Promise<string | undefined> => {
     try {
       const exec = await raceTimeout(
-        mcp.callTool(CMC_SERVER, "execute_skill", {
+        callToolWithRetry(mcp, "execute_skill", {
           unique_name: job.name,
           parameters: job.params,
         }),
@@ -351,7 +482,7 @@ export async function runSkillBundle(
     }
   };
 
-  const parts = (await Promise.all(jobs.map(runOne))).filter(
+  const parts = (await mapPool(jobs, skillConcurrency(), runOne)).filter(
     (p): p is string => Boolean(p),
   );
   return parts.length
@@ -530,9 +661,13 @@ export const SKILL_BUNDLES: readonly BundleSpec[] = [
     feature: "Crypto research",
     envKey: "RESEARCH_SKILLS",
     defaults: DEFAULT_RESEARCH_SKILLS,
-    // A liquid altcoin (perps + sector tags) is representative — altcoin-scoped skills
-    // (e.g. sector relative position) can't classify a base layer like ETH.
-    params: { symbol: "SOL" },
+    // Probe symbol must be a SECTOR-classified altcoin with deep perps so EVERY research
+    // skill has an appropriate input — incl. assess_altcoin_sector_relative_position,
+    // which derives sectors from quote tags and so can't classify base layers / L1s
+    // (ETH, SOL, AVAX all return SECTOR_DISCOVERY_FAILED). LINK (Oracle sector + liquid
+    // perps) keeps the perp/funding/liquidation skills green too. Probe-only — the real
+    // RESEARCH action uses the user's token.
+    params: { symbol: "LINK" },
   },
   {
     feature: "Portfolio analysis",
@@ -564,8 +699,9 @@ export const SKILL_BUNDLES: readonly BundleSpec[] = [
 export interface SkillProbeResult {
   /** Job label — the unique_name, suffixed `:SYMBOL` for fanned symbol skills. */
   skill: string;
-  status: "ok" | "error" | "timeout" | "empty";
-  /** Payload size on success, or a short reason on failure. */
+  /** ok = clean evidence · partial = degraded-but-usable · error/timeout/empty = failed. */
+  status: "ok" | "partial" | "error" | "timeout" | "empty";
+  /** Payload size on success, or a short reason on partial/failure. */
   detail: string;
   /** Wall-clock time for the execute_skill call, in ms. */
   ms: number;
@@ -602,7 +738,7 @@ export async function probeSkillBundle(
     const t0 = Date.now();
     try {
       const exec = await raceTimeout(
-        mcp.callTool(CMC_SERVER, "execute_skill", {
+        callToolWithRetry(mcp, "execute_skill", {
           unique_name: job.name,
           parameters: job.params,
         }),
@@ -635,6 +771,17 @@ export async function probeSkillBundle(
           detail: errorReason(txt),
           ms,
         };
+      // Not an error, but the skill may have returned a DEGRADED ("partial") evidence
+      // pack — real signal, thin underlying data right now. Flag it so the report shows
+      // a working-but-degraded result (⚠️) distinct from a clean ✅, with its own summary.
+      const status = nestedStatus(txt);
+      if (status && /^(partial|degrad)/i.test(status))
+        return {
+          skill: job.label,
+          status: "partial",
+          detail: extractSkillSummary(txt) ?? status,
+          ms,
+        };
       return { skill: job.label, status: "ok", detail: `${txt.length} chars`, ms };
     } catch (e) {
       return {
@@ -646,5 +793,5 @@ export async function probeSkillBundle(
     }
   };
 
-  return Promise.all(jobs.map(probeOne));
+  return mapPool(jobs, skillConcurrency(), probeOne);
 }

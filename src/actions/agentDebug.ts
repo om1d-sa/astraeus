@@ -27,15 +27,10 @@ const ICON: Record<DiagCheck["status"], string> = {
 
 const PROBE_ICON: Record<SkillProbeResult["status"], string> = {
   ok: "✅",
+  partial: "⚠️",
   error: "❌",
   timeout: "⏱️",
   empty: "∅",
-};
-
-const num = (key: string, fallback: number): number => {
-  const v = process.env[key];
-  const n = v ? Number(v) : NaN;
-  return Number.isFinite(n) ? n : fallback;
 };
 
 /** Map a feature keyword in the message to its bundle, so "debug research skills"
@@ -97,6 +92,16 @@ export const agentDebugAction: Action = {
     const t = (message.content?.text ?? "").toLowerCase();
     if (/\bskill[\s-]*bundles?\b/.test(t)) return true;
     if (/\b(probe|diagnose)\s+(the\s+)?skills?\b/.test(t)) return true;
+    // Per-feature skill diagnostics — "crypto research diagnostics", "overall market
+    // status diagnostics", "liquidation analysis diagnostics", "portfolio analysis
+    // diagnostics", etc. — route here so each LIVE-probes its own bundle.
+    if (
+      /\bdiagnostics?\b/.test(t) &&
+      /\b(skill|bundle|market|research|trend\w*|portfolio|liquidation|cascade|squeeze)\b/.test(
+        t,
+      )
+    )
+      return true;
     if (!/\bdebug\b/.test(t)) return false;
     // "debug trade/trading" alone is the trade engine's job (TRADE_DIAGNOSTICS);
     // every other "debug …" (report / skills / a feature / bare debug) is ours.
@@ -114,14 +119,23 @@ export const agentDebugAction: Action = {
     callback?: HandlerCallback,
   ): Promise<ActionResult> => {
     const t = (message.content?.text ?? "").toLowerCase();
-    const wantsProbe = /\b(skill|bundle|probe|live|deep)\b/.test(t);
+    // A per-feature "<feature> diagnostics" command should LIVE-probe that feature's
+    // bundle (not just print the inventory), so treat it as a probe request too.
+    const wantsProbe =
+      /\b(skill|bundle|probe|live|deep)\b/.test(t) ||
+      (/\bdiagnostics?\b/.test(t) &&
+        /\b(market|research|trend\w*|portfolio|liquidation|cascade|squeeze)\b/.test(t));
     const probeAll = /\b(all|every|everything|full|exhaustive)\b/.test(t);
     const lines: string[] = ["🧪 **Astraeus agent debug report**"];
 
     try {
-      await callback?.({
-        text: "🧪 Running agent debug report (live probes — this can take ~10–30s)…",
-      });
+      // NO intermediate "running…" callback. ElizaOS BUFFERS every action callback() and
+      // flushes them all AFTER the handler returns, each stamped with the SAME responseId
+      // (processActions → storageCallback). So a progress note never shows live, and worse:
+      // it INSERTs message-id=R first, then the final report re-uses id=R → the GUI dedups
+      // it as already-seen and the result only appears after a manual Ctrl+R. Sending a
+      // SINGLE final callback (below) makes the report broadcast as a fresh message that
+      // renders live. The agent's normal "thinking" indicator covers the ~1-2 min probe.
 
       // --- 1) Core systems (reuses the trade-diagnostics live probes) ---
       const svc = runtime.getService(
@@ -166,27 +180,77 @@ export const agentDebugAction: Action = {
       // --- 3) Live skill probe (opt-in; spends CMC credits) ---
       if (wantsProbe && mcpOk) {
         const { bundles, targeted } = selectBundles(t);
-        const limit = probeAll ? 0 : num("DEBUG_SKILL_PROBE_LIMIT", 3);
+        // Default: probe EVERY skill so the report matches the inventory counts above
+        // (the old default of 3/bundle is why only ~18 of ~80 skills showed). Say
+        // "quick"/"sample" for a fast 3/bundle spot-check; DEBUG_SKILL_PROBE_LIMIT pins
+        // an explicit cap (0 = all).
+        // DEBUG_SKILL_PROBE_LIMIT, when set, must be a NUMBER: 0 = every skill, N =
+        // first N/bundle. A non-numeric value (e.g. a chat command pasted in by mistake)
+        // is ignored with a warning so it can't silently change the probe scope.
+        const envRaw = process.env.DEBUG_SKILL_PROBE_LIMIT?.trim();
+        const envNum =
+          envRaw && Number.isFinite(Number(envRaw))
+            ? Math.max(0, Math.trunc(Number(envRaw)))
+            : undefined;
+        if (envRaw && envNum === undefined)
+          logger.warn(
+            { DEBUG_SKILL_PROBE_LIMIT: envRaw },
+            'DEBUG_SKILL_PROBE_LIMIT must be a number (0 = all skills, e.g. 3 = first 3/bundle); ignoring this value',
+          );
+        const quick = !probeAll && /\b(quick|sample|fast)\b/.test(t);
+        const limit = envNum ?? (quick ? 3 : 0);
         lines.push(
-          `\n**Live skill probe** — ${targeted ? "targeted bundle(s)" : "all bundles"}, ${limit ? `first ${limit}/bundle` : "every skill"}, via execute_skill (spends CMC credits):`,
+          `\n**Live skill probe** — ${targeted ? "targeted bundle(s)" : "all bundles"}, ${limit ? `first ${limit}/bundle` : "every skill"}, via execute_skill:`,
         );
-        const probed = await Promise.all(
-          bundles.map(async (b) => {
-            const list = skillList(b.envKey, b.defaults);
-            const results = await probeSkillBundle(runtime, list, b.params ?? {}, {
-              symbols: b.symbols,
-              perSkillParams: b.perSkillParams,
-              limit: limit || undefined,
-            });
-            return { b, results };
-          }),
-        );
-        for (const { b, results } of probed) {
+        // The message bus upserts every callback() in one action onto a SINGLE message
+        // row (see scripts/patch-message-upsert.mjs), so streaming intermediate messages
+        // would overwrite each other. We build the WHOLE report — every skill, ✅ or its
+        // failure reason — into `lines` and send it in one final callback below.
+        let totalOk = 0;
+        let totalPartial = 0;
+        let totalN = 0;
+        const failures: string[] = [];
+        for (const b of bundles) {
+          const list = skillList(b.envKey, b.defaults);
+          const results = await probeSkillBundle(runtime, list, b.params ?? {}, {
+            symbols: b.symbols,
+            perSkillParams: b.perSkillParams,
+            limit: limit || undefined,
+          });
           const ok = results.filter((r) => r.status === "ok").length;
-          lines.push(`\n${b.feature}: ${ok}/${results.length} ok`);
-          for (const r of results)
-            lines.push(`  ${PROBE_ICON[r.status]} ${r.skill} — ${r.detail} (${r.ms}ms)`);
+          const partial = results.filter((r) => r.status === "partial").length;
+          totalOk += ok;
+          totalPartial += partial;
+          totalN += results.length;
+          lines.push(
+            `\n**${b.feature} — ${ok}/${results.length} ok${partial ? `, ${partial} partial` : ""}**`,
+          );
+          for (const r of results) {
+            if (r.status === "ok") {
+              lines.push(`  ✅ ${r.skill}`);
+            } else if (r.status === "partial") {
+              // Working, but degraded data right now — flag with its own summary.
+              lines.push(`  ⚠️ ${r.skill} — partial: ${r.detail}`);
+            } else {
+              // Genuinely failed — show the reason inline and collect for the recap.
+              lines.push(
+                `  ${PROBE_ICON[r.status]} ${r.skill} — ${r.status.toUpperCase()}: ${r.detail}`,
+              );
+              failures.push(
+                `  ${PROBE_ICON[r.status]} [${b.feature}] ${r.skill} — ${r.status.toUpperCase()}: ${r.detail}`,
+              );
+            }
+          }
         }
+        // Consolidated recap of the genuinely NOT-working skills (errors/timeouts/empty),
+        // separate from ⚠️ partials which still return usable (degraded) evidence.
+        if (failures.length) {
+          lines.push(`\n**❌ Not working — ${failures.length}/${totalN}:**`);
+          lines.push(...failures);
+        }
+        lines.push(
+          `\n**Probe complete — ${totalOk}/${totalN} ok${totalPartial ? `, ${totalPartial} partial (degraded data)` : ""}, ${failures.length} failed, across ${bundles.length} bundle(s)${failures.length ? " — see ❌ list above." : "."}**`,
+        );
       } else if (wantsProbe && !mcpOk) {
         lines.push("\n⚠️ Skipping live skill probe — MCP service unavailable.");
       } else {
@@ -204,16 +268,11 @@ export const agentDebugAction: Action = {
         `${idOn ? "✅" : "•"} AGENT_IDENTITY command: ${idOn ? "enabled" : "disabled (ERC8004_IDENTITY_ENABLED=false)"}`,
       );
 
-      // Cap the report so the message bus can always persist it — a very large reply
-      // (e.g. a full live probe) can fail the central_messages insert and never render.
-      // The complete report is always in the backend log regardless.
-      const MAX = 3500;
-      const full = lines.join("\n");
-      const report =
-        full.length > MAX
-          ? `${full.slice(0, MAX)}\n…(truncated — see the terminal log for the full report)`
-          : full;
-      await callback?.({ text: report, actions: ["AGENT_DEBUG"] });
+      // ONE callback with the COMPLETE report. The message bus upserts every callback()
+      // in one action onto a SINGLE message row (scripts/patch-message-upsert.mjs), so a
+      // streamed/chunked report overwrites itself — only the last piece would survive.
+      // The whole list (every skill, ✅ or its failure reason) must go in one message.
+      await callback?.({ text: lines.join("\n"), actions: ["AGENT_DEBUG"] });
       return {
         text: "agent debug report",
         success: true,
